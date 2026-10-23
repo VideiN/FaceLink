@@ -3,27 +3,22 @@ import SwiftUI
 
 struct ContentView: View {
     @Bindable var model: AppModel
-    @State private var addressText = ""
-    @State private var addressError = false
     private let build = BuildInfo.current
 
     var body: some View {
         NavigationStack {
             Form {
                 Section("보낼 곳") {
-                    TextField("IP:포트 (예: 192.168.0.10:39539)", text: $addressText)
-                        .keyboardType(.numbersAndPunctuation)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .onSubmit(applyAddress)
-                    if addressError {
-                        Text("주소를 읽지 못했습니다. 예: 192.168.0.10:39539")
-                            .font(.footnote)
-                            .foregroundStyle(.red)
+                    NavigationLink {
+                        TargetPickerView(model: model)
+                    } label: {
+                        if let target = model.target {
+                            TargetRow(title: target.name, detail: target.addressDescription)
+                        } else {
+                            Text("보낼 곳 고르기")
+                        }
                     }
-                    if let target = model.target {
-                        LabeledContent("지금", value: target.addressDescription)
-                    }
+                    .disabled(model.isSending)
                 }
 
                 Section {
@@ -31,11 +26,10 @@ struct ContentView: View {
                         if model.isSending {
                             model.stop()
                         } else {
-                            applyAddress()
                             model.startTestSend()
                         }
                     }
-                    .disabled(!model.isSending && model.target == nil && addressText.isEmpty)
+                    .disabled(!model.isSending && model.target == nil)
                     Button("정면 맞추기") {
                         model.calibrate()
                     }
@@ -56,16 +50,6 @@ struct ContentView: View {
                 }
             }
             .navigationTitle("Face Link")
-        }
-    }
-
-    private func applyAddress() {
-        guard !addressText.isEmpty else { return }
-        if let target = FaceLinkTarget(address: addressText) {
-            model.target = target
-            addressError = false
-        } else {
-            addressError = true
         }
     }
 }
@@ -100,6 +84,8 @@ extension NetworkProblem {
         switch self {
         case .localNetworkDenied:
             "로컬 네트워크 권한이 꺼져 있습니다. 설정 › 개인정보 보호 및 보안 › 로컬 네트워크에서 Face Link를 켜 주세요."
+        case .receiverNotListening:
+            "받는 쪽이 받고 있지 않습니다. 아이패드의 Broadcast에서 얼굴 추적을 켰는지, 주소와 포트가 맞는지 확인해 주세요."
         case .network(let description):
             "네트워크 오류: \(description)"
         }

@@ -37,6 +37,8 @@ public final class FaceLinkSender: @unchecked Sendable {
     public enum Event: Equatable, Sendable, CustomStringConvertible {
         case ready
         case connectionProblem(NetworkProblem)
+        /// 문제가 풀림 (보내기가 2초 넘게 실패하지 않음)
+        case problemCleared
         case ack(FaceLinkAck, roundTrip: TimeInterval?)
         /// Ack가 오기 시작함(true) 또는 3초 넘게 없음(false)
         case responding(Bool)
@@ -49,6 +51,7 @@ public final class FaceLinkSender: @unchecked Sendable {
             switch self {
             case .ready: "ready"
             case .connectionProblem(let problem): "problem \(problem)"
+            case .problemCleared: "problem cleared"
             case .ack(let ack, let roundTrip):
                 "ack from \(ack.receiverName) (seq \(ack.lastSequence), \(ack.receiverFPS) fps, rtt \(roundTrip.map { "\(Int($0 * 1000)) ms" } ?? "?"))"
             case .responding(let responding): responding ? "responding" : "no response for 3 s"
@@ -97,6 +100,7 @@ public final class FaceLinkSender: @unchecked Sendable {
     private var rateLimiter: FrameRateLimiter
     private var framesThisSecond = 0
     private var lastAckTime: TimeInterval?
+    private var lastProblemTime: TimeInterval = 0
     private var status = Status()
 
     public init(configuration: Configuration, onEvent: @escaping @Sendable (Event) -> Void = { _ in }) {
@@ -219,6 +223,7 @@ public final class FaceLinkSender: @unchecked Sendable {
 
     /// 같은 문제를 거듭 알리지 않는다 (보내기 실패는 프레임마다 날 수 있다)
     private func report(_ problem: NetworkProblem) {
+        lastProblemTime = Self.now
         guard status.problem != problem else { return }
         status.problem = problem
         onEvent(.connectionProblem(problem))
@@ -278,6 +283,12 @@ public final class FaceLinkSender: @unchecked Sendable {
         if responding != status.isResponding {
             status.isResponding = responding
             onEvent(.responding(responding))
+        }
+        // 받는 쪽이 다시 살아나면 보내기 오류가 그친다. 연결이 준비된 채로 2초 동안 오류가 없으면 문제를 지운다
+        // (UDP는 포트 닫힘 오류가 보내기 한 번 걸러 오므로 보내기가 한 번 성공했다고 바로 지우지 않는다)
+        if status.problem != nil, isReady, now - lastProblemTime > 2 {
+            status.problem = nil
+            onEvent(.problemCleared)
         }
     }
 

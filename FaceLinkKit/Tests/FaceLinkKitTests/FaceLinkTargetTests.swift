@@ -54,3 +54,43 @@ func badAddresses(input: String) {
         #expect(frame.blendShapes.values.allSatisfy { (0...1).contains($0) })
     }
 }
+
+/// QR 주소 (docs/face-link.md 3.4)
+@Test func qrURLParsing() throws {
+    let target = try FaceLinkTarget(url: "facelink://192.168.0.20:39540?v=1&name=%EB%82%B4%20iPad&token=k3x9")
+    #expect(target.location == .address(host: "192.168.0.20", port: 39540))
+    #expect(target.name == "내 iPad")
+    #expect(target.token == "k3x9")
+
+    // v가 없으면 1, 이름이 없으면 주소, 포트가 없으면 기본 포트, 대소문자 무시
+    let minimal = try FaceLinkTarget(url: "FaceLink://10.0.0.5")
+    #expect(minimal.location == .address(host: "10.0.0.5", port: 39539))
+    #expect(minimal.name == "10.0.0.5:39539")
+    #expect(minimal.token == "")
+
+    let v6 = try FaceLinkTarget(url: "facelink://[fe80::1]:39539/?token=t")
+    #expect(v6.location == .address(host: "fe80::1", port: 39539))
+    #expect(v6.token == "t")
+}
+
+@Test func badQRURLs() {
+    #expect(throws: TargetURLError.notFaceLink) { try FaceLinkTarget(url: "https://example.com") }
+    #expect(throws: TargetURLError.notFaceLink) { try FaceLinkTarget(url: "192.168.0.1:39539") }
+    #expect(throws: TargetURLError.unsupportedVersion("2")) { try FaceLinkTarget(url: "facelink://192.168.0.1:39539?v=2") }
+    #expect(throws: TargetURLError.invalidAddress) { try FaceLinkTarget(url: "facelink://?v=1") }
+    #expect(throws: TargetURLError.invalidAddress) { try FaceLinkTarget(url: "facelink://192.168.0.1:0") }
+}
+
+@Test func urlOrAddress() {
+    #expect(FaceLinkTarget(urlOrAddress: "facelink://10.0.0.5:4000?token=a")?.token == "a")
+    #expect(FaceLinkTarget(urlOrAddress: "10.0.0.5:4000")?.location == .address(host: "10.0.0.5", port: 4000))
+    #expect(FaceLinkTarget(urlOrAddress: "facelink://") == nil)
+}
+
+@Test func networkProblemFromError() {
+    #expect(NetworkProblem(.posix(.ECONNREFUSED)) == .receiverNotListening)
+    #expect(NetworkProblem(.dns(-65570)) == .localNetworkDenied)
+    if case .network = NetworkProblem(.posix(.ENETUNREACH)) {} else {
+        Issue.record("ENETUNREACH should be a plain network problem")
+    }
+}
