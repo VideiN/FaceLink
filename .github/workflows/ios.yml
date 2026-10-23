@@ -29,6 +29,13 @@ jobs:
       - name: Xcode
         run: xcodebuild -version
 
+      # 시뮬레이터의 첫 부팅은 몇 분 걸린다. 미리 걸어 두고 시험·빌드와 겹치게 한다
+      - name: Boot simulator
+        run: |
+          udid=$(xcrun simctl list devices available --json | python3 scripts/pick-simulator.py)
+          echo "SIM_UDID=$udid" >> "$GITHUB_ENV"
+          nohup xcrun simctl boot "$udid" > "$RUNNER_TEMP/simctl-boot.log" 2>&1 &
+
       - name: Install XcodeGen
         run: bash scripts/install-xcodegen.sh
 
@@ -43,8 +50,9 @@ jobs:
       - name: Run on simulator
         run: |
           mkdir -p app-run
-          udid=$(xcrun simctl list devices available --json | python3 scripts/pick-simulator.py)
-          xcrun simctl bootstatus "$udid" -b
+          udid=$SIM_UDID
+          cat "$RUNNER_TEMP/simctl-boot.log" || true
+          time xcrun simctl bootstatus "$udid" -b
           bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")
           xcrun simctl install "$udid" "$APP"
 
