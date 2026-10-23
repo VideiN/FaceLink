@@ -148,21 +148,18 @@ private func wait(timeout: TimeInterval = 3, until condition: () -> Bool) -> Boo
     #expect(sender.currentStatus.isCalibrated)
 }
 
-/// 30Hz로 두면 60Hz 공급원의 프레임을 하나 걸러 보낸다
-@Test func senderSkipsFramesAboveFrameRate() throws {
-    let receiver = try LoopbackSocket()
-    let target = FaceLinkTarget(location: .address(host: "127.0.0.1", port: receiver.port))
-    let sender = FaceLinkSender(configuration: .init(target: target, deviceName: "Test", appVersion: "0", frameRate: 30))
-    sender.start()
-    defer { sender.stop() }
-    // 준비될 때까지 (Hello가 오면 준비된 것)
-    #expect(wait { receiver.receive() != nil })
-    for index in 0..<12 {
-        sender.send(SyntheticFace.frame(at: Double(index) / 60))
-        Thread.sleep(forTimeInterval: 1.0 / 60)
+/// 시각을 직접 넣어 시험한다 (CI에서는 Thread.sleep이 한참 늦을 수 있다)
+@Test func frameRateLimiter() {
+    func sentCount(frameRate: Int, times: [TimeInterval]) -> Int {
+        var limiter = FrameRateLimiter(frameRate: frameRate)
+        return times.filter { limiter.shouldSend(at: $0) }.count
     }
-    #expect(wait { sender.currentStatus.framesSent >= 5 })
-    Thread.sleep(forTimeInterval: 0.1)
-    let sent = sender.currentStatus.framesSent
-    #expect((4...8).contains(sent), "sent \(sent) of 12 frames at 30 Hz")
+    let at60 = (0..<12).map { Double($0) / 60 }
+    // 60Hz 공급원을 30Hz로: 하나 걸러
+    #expect(sentCount(frameRate: 30, times: at60) == 6)
+    #expect(sentCount(frameRate: 60, times: at60) == 12)
+    // 조금 일찍 온 프레임(간격 15.5ms)도 60Hz로 보낸다
+    #expect(sentCount(frameRate: 60, times: (0..<12).map { Double($0) * 0.0155 }) == 12)
+    // 공급원이 설정보다 느리면 다 보낸다
+    #expect(sentCount(frameRate: 60, times: (0..<12).map { Double($0) / 30 }) == 12)
 }

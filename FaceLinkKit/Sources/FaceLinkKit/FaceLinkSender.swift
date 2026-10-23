@@ -94,7 +94,7 @@ public final class FaceLinkSender: @unchecked Sendable {
     private var roundTrips = RoundTripTracker()
     private var calibration = HeadCalibration()
     private var calibrationRequested = false
-    private var lastFrameTime = -TimeInterval.infinity
+    private var rateLimiter: FrameRateLimiter
     private var framesThisSecond = 0
     private var lastAckTime: TimeInterval?
     private var status = Status()
@@ -103,6 +103,7 @@ public final class FaceLinkSender: @unchecked Sendable {
         self.configuration = configuration
         self.onEvent = onEvent
         encoder = FaceLinkEncoder(sendEyes: configuration.sendEyes, sendHeadPosition: configuration.sendHeadPosition)
+        rateLimiter = FrameRateLimiter(frameRate: configuration.frameRate)
     }
 
     deinit {
@@ -293,9 +294,7 @@ public final class FaceLinkSender: @unchecked Sendable {
     private func sendOnQueue(_ frame: FaceFrame) {
         guard running, isReady else { return }
         let now = Self.now
-        // 공급원이 설정보다 빠르면 건너뛴다. 조금 일찍 온 프레임도 받게 10% 여유를 둔다
-        guard now - lastFrameTime >= 0.9 / Double(configuration.frameRate) else { return }
-        lastFrameTime = now
+        guard rateLimiter.shouldSend(at: now) else { return }
 
         var frame = frame
         if calibrationRequested && frame.isTracked {
