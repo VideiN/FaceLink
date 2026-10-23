@@ -32,3 +32,9 @@ Face Link: 아이폰 TrueDepth 얼굴 추적 수치(블렌드셰이프 52개, �
 - 번들 ID `io.github.videin.facelink`, 앱 이름 "Face Link", 아이폰 전용, 최소 iOS 26.0. 사용자 기기는 iPhone 18 Pro Max, iOS 27이다. `macos-26` 러너의 Xcode(26.6)로 빌드할 수 있게 26.0으로 두었다. Xcode 27 러너(`xcode-27`)는 아직 미리보기다
 - 사용자와는 한국어로 소통하고, 앱 화면 문구도 한국어다. 문서·주석은 설계 문서처럼 쉬운 한국어로 쓴다
 - 커밋은 Broadcast 저장소와 같게: 한국어 제목 한 줄, 본문에 사용자 요청(인용)과 바뀐 점, 끝에 Co-Authored-By
+
+## 작업 기록과 계획
+
+- `worklog/`에 마크다운으로 남긴다. **git에 올리지 않는다** (`.gitignore`). 이 PC에만 있다
+- `worklog/plan.md`: 단계별 작업 계획과 상태. 단계를 시작하거나 끝내면 고친다
+- `worklog/<날짜>.md`: 그날 한 일. 작업이 끝날 때마다 사용자 요청, 결정, 한 일, 확인 결과(CI 실행 번호, 커밋), 남은 일을 덧붙인다
