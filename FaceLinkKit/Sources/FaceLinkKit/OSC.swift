@@ -176,7 +176,7 @@ private struct OSCReader {
 
 extension [UInt8] {
     mutating func appendBigEndian<T: FixedWidthInteger>(_ value: T) {
-        withUnsafeBytes(of: value.bigEndian) { append(contentsOf: $0) }
+        Swift.withUnsafeBytes(of: value.bigEndian) { append(contentsOf: $0) }
     }
 
     /// UTF-8 바이트 + 널, 그리고 길이가 4의 배수가 되게 널을 더 붙인다 (배열 처음 기준)
