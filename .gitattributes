@@ -1,0 +1,6 @@
+# 빌드는 macOS 러너에서 하므로 텍스트 파일은 LF로 둔다 (Windows에서 CRLF로 바뀌면 셸 스크립트가 깨진다)
+* text=auto eol=lf
+
+*.png binary
+*.ipa binary
+*.zip binary

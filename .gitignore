@@ -1,0 +1,26 @@
+# --- 빌드 출력 ---
+/build/
+/dist/
+/app-run/
+
+# --- Xcode / Swift ---
+# 프로젝트는 project.yml에서 XcodeGen으로 만든다
+*.xcodeproj/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+.build/
+.swiftpm/
+Package.resolved
+
+# --- 패키징 결과물 ---
+*.ipa
+Payload/
+*.dSYM/
+
+# --- 서명 자료: 저장소와 CI에 두지 않는다 ---
+*.mobileprovision
+*.p12
+*.cer
+
+.DS_Store

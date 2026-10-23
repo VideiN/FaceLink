@@ -1,0 +1,119 @@
+name: iOS
+
+on:
+  push:
+    paths-ignore:
+      - '**.md'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # 프로토콜 시험(FaceLinkKit)과 시뮬레이터에서 앱 띄우기
+  simulator:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Xcode
+        run: xcodebuild -version
+
+      - name: Install XcodeGen
+        run: bash scripts/install-xcodegen.sh
+
+      - name: Test FaceLinkKit
+        run: swift test --package-path FaceLinkKit
+
+      - name: Build
+        run: |
+          app=$(bash scripts/build.sh simulator)
+          echo "APP=$app" >> "$GITHUB_ENV"
+
+      - name: Run on simulator
+        run: |
+          mkdir -p app-run
+          udid=$(xcrun simctl list devices available --json | python3 scripts/pick-simulator.py)
+          xcrun simctl bootstatus "$udid" -b
+          bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")
+          xcrun simctl install "$udid" "$APP"
+
+          # 앱의 표준 출력(print)을 app-run/app.log로 받는다
+          xcrun simctl launch --console-pty "$udid" "$bundle_id" > app-run/app.log 2>&1 &
+          launch_pid=$!
+          for _ in $(seq 1 60); do
+            grep -q 'build: ' app-run/app.log && break
+            sleep 1
+          done
+          sleep 3
+          xcrun simctl io "$udid" screenshot app-run/screen.png > /dev/null 2>&1 || true
+          xcrun simctl terminate "$udid" "$bundle_id" || true
+          kill "$launch_pid" 2> /dev/null || true
+
+          cat app-run/app.log
+          # 이 실행에서 만든 빌드가 떴는지 (BuildInfo.swift)
+          grep -q "build: #$GITHUB_RUN_NUMBER " app-run/app.log
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: app-simulator-run
+          path: app-run
+          if-no-files-found: ignore
+
+  # 서명 없는(가짜 서명) IPA. 기기에는 LiveContainer로 설치한다
+  ipa:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install XcodeGen
+        run: bash scripts/install-xcodegen.sh
+
+      - name: Build
+        run: |
+          app=$(bash scripts/build.sh device)
+          echo "APP=$app" >> "$GITHUB_ENV"
+
+      - name: Package IPA
+        run: |
+          # 번들 안에 dSYM이 있으면 LiveContainer가 설치하며 서명에 실패한다
+          if find "$APP" -name '*.dSYM' | grep -q .; then
+            echo "dSYM inside the app bundle:"; find "$APP" -name '*.dSYM'; exit 1
+          fi
+          # 어느 실행의 빌드인지 LiveContainer 목록(버전 0.1.<실행 번호>)과 파일 이름에서 알아보게
+          version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")
+          test "$version" = "0.1.$GITHUB_RUN_NUMBER"
+          branch=${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}
+          ipa="FaceLink-$GITHUB_RUN_NUMBER-${branch//\//-}-${GITHUB_SHA::7}.ipa"
+
+          mkdir -p build/ipa/Payload dist
+          cp -R "$APP" build/ipa/Payload/
+          (cd build/ipa && zip -qry "../../dist/$ipa" Payload)
+          if [ -d "$APP.dSYM" ]; then cp -R "$APP.dSYM" dist/; fi
+          codesign -dv "$APP" 2>&1 | grep -E 'Identifier|Signature'
+          ls -la dist
+          {
+            echo "### 기기용 IPA: 빌드 #$GITHUB_RUN_NUMBER"
+            echo "- 브랜치 \`$branch\`, 커밋 \`${GITHUB_SHA::7}\`"
+            echo "- 아티팩트 \`facelink-ipa-$GITHUB_RUN_NUMBER\`, 파일 \`$ipa\`"
+            echo "- LiveContainer 목록에는 버전 \`$version\`, 앱 화면에는 \`#$GITHUB_RUN_NUMBER $branch\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: facelink-ipa-${{ github.run_number }}
+          path: |
+            dist/*.ipa
+            dist/*.dSYM

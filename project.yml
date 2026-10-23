@@ -1,0 +1,42 @@
+# XcodeGen 설정. FaceLink.xcodeproj는 여기서 만들고 저장소에 넣지 않는다 (scripts/build.sh가 xcodegen generate를 부른다).
+name: FaceLink
+options:
+  bundleIdPrefix: io.github.videin
+  deploymentTarget:
+    # 사용자 아이폰은 iOS 27. CI 러너(macos-26)의 Xcode 26.6으로 빌드할 수 있는 버전으로 둔다
+    iOS: "26.0"
+  developmentLanguage: ko
+  createIntermediateGroups: true
+
+packages:
+  FaceLinkKit:
+    path: FaceLinkKit
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    # CI가 실행 번호로 덮어쓴다 (scripts/build.sh): 버전 0.1.<번호>
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "0"
+    # 빌드 정보 (Info.plist의 FaceLinkBuild → BuildInfo.swift). 로컬 빌드는 이 값 그대로
+    FACELINK_BUILD_RUN: "0"
+    FACELINK_BUILD_BRANCH: ""
+    FACELINK_BUILD_COMMIT: ""
+
+targets:
+  FaceLink:
+    type: application
+    platform: iOS
+    sources:
+      - FaceLink
+    dependencies:
+      - package: FaceLinkKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.videin.facelink
+        INFOPLIST_FILE: FaceLink/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        TARGETED_DEVICE_FAMILY: "1"
+        SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
+        SWIFT_APPROACHABLE_CONCURRENCY: YES
+    scheme: {}
