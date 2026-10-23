@@ -2,13 +2,18 @@ import SwiftUI
 
 @main
 struct FaceLinkApp: App {
+    @State private var model = AppModel()
+
     init() {
-        print("build: \(BuildInfo.current.summary) (version \(BuildInfo.current.version))")
+        log("build: \(BuildInfo.current.summary) (version \(BuildInfo.current.version))")
     }
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            ContentView(model: model)
+                .task {
+                    model.runAutoTest(arguments: ProcessInfo.processInfo.arguments)
+                }
         }
     }
 }

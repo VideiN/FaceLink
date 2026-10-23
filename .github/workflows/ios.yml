@@ -39,6 +39,9 @@ jobs:
       - name: Install XcodeGen
         run: bash scripts/install-xcodegen.sh
 
+      - name: Test receiver script
+        run: python3 -m unittest discover -s scripts -v
+
       - name: Test FaceLinkKit
         run: swift test --package-path FaceLinkKit
 
@@ -47,30 +50,11 @@ jobs:
           app=$(bash scripts/build.sh simulator)
           echo "APP=$app" >> "$GITHUB_ENV"
 
+      # 시험 송신을 파이썬 수신기로 받아 형식·Ack·Calibrate 확인 (scripts/ci-run-simulator.sh)
       - name: Run on simulator
         run: |
-          mkdir -p app-run
-          udid=$SIM_UDID
           cat "$RUNNER_TEMP/simctl-boot.log" || true
-          time xcrun simctl bootstatus "$udid" -b
-          bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")
-          xcrun simctl install "$udid" "$APP"
-
-          # 앱의 표준 출력(print)을 app-run/app.log로 받는다
-          xcrun simctl launch --console-pty "$udid" "$bundle_id" > app-run/app.log 2>&1 &
-          launch_pid=$!
-          for _ in $(seq 1 60); do
-            grep -q 'build: ' app-run/app.log && break
-            sleep 1
-          done
-          sleep 3
-          xcrun simctl io "$udid" screenshot app-run/screen.png > /dev/null 2>&1 || true
-          xcrun simctl terminate "$udid" "$bundle_id" || true
-          kill "$launch_pid" 2> /dev/null || true
-
-          cat app-run/app.log
-          # 이 실행에서 만든 빌드가 떴는지 (BuildInfo.swift)
-          grep -q "build: #$GITHUB_RUN_NUMBER " app-run/app.log
+          bash scripts/ci-run-simulator.sh "$SIM_UDID" "$APP" app-run
 
       - uses: actions/upload-artifact@v7
         if: always()
