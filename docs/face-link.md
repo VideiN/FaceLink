@@ -126,6 +126,7 @@ ARKit 얼굴 추적 (TrueDepth)                 얼굴 데이터 공급원
 
 - 사용자는 Windows만 쓰고 Mac이 없다 → **모든 빌드는 GitHub Actions macOS 러너**에서
 - 서명 없는(가짜 서명) IPA를 아티팩트로 만들어 LiveContainer 등으로 설치한다. Broadcast 저장소의 `.github/workflows/ios.yml`이 IPA를 만드는 방식을 참고하되, 코드는 새로 쓴다
+- TestFlight (2026-10-25): main에 푸시하면 그 IPA를 배포 인증서로 다시 서명해 App Store Connect에 올린다. 서명·업로드 스크립트는 Broadcast의 것을 저작자가 가져와 쓴다
 - **앱 버전에 CI 실행 번호를 넣어** 설치한 앱이 어느 빌드인지 기기에서 바로 보이게 한다 (Broadcast에서 다른 빌드를 깔고도 몰랐던 일이 있었다)
 - CI 시험: 시뮬레이터에서 시험 송신 모드로 띄우고, 파이썬 수신기로 받아 형식을 확인한다 (Hello, Frame 순번 증가, 이름 52개, Apply, 데이터그램 1,400바이트 이하)
 

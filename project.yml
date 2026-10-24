@@ -37,6 +37,8 @@ targets:
         INFOPLIST_FILE: FaceLink/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         TARGETED_DEVICE_FAMILY: "1"
+        # FaceLink/Assets.xcassets (임시 아이콘은 scripts/make-app-icon.py로 만든다). TestFlight에 올리려면 있어야 한다
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
         SWIFT_APPROACHABLE_CONCURRENCY: YES
     scheme: {}

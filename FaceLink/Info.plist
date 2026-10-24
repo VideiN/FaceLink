@@ -22,6 +22,14 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<!-- App Store Connect가 64비트 바이너리에 요구한다 (업로드 오류 90502). Xcode 템플릿에는 있지만 이 Info.plist는 직접 쓴 것이라 넣는다 -->
+	<key>UIRequiredDeviceCapabilities</key>
+	<array>
+		<string>arm64</string>
+	</array>
+	<!-- 표준 암호화(HTTPS 등)만 쓴다. TestFlight 빌드마다 수출 규정 질문을 받지 않게 -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>NSCameraUsageDescription</key>
 	<string>전면 TrueDepth 카메라로 얼굴을 추적하고, 아이패드의 QR 코드를 찍습니다. 영상은 보내지 않고 표정과 머리 방향 수치만 보냅니다.</string>
 	<key>NSLocalNetworkUsageDescription</key>

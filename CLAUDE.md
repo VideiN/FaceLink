@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Face Link: 아이폰 TrueDepth 얼굴 추적 수치(블렌드셰이프 52개, 머리·눈 자세)를 UDP/OSC(VMC 호환, FaceLink v1)로 아이패드의 Broadcast 앱에 보내는 컴패니언 앱. **설계와 프로토콜의 기준은 `docs/face-link.md`**다. 기능을 만들기 전에 읽는다.
 
-- 받는 쪽 Broadcast는 다른 저장소다 (`VideiN/iPadOS-broadcasting`, `face-link` 브랜치, GPL). 두 앱은 프로토콜로만 연결된다. **Broadcast의 코드를 이 저장소에 가져오지 않는다** (이 저장소는 MIT). 참고로 읽는 것은 된다 (`gh api repos/VideiN/iPadOS-broadcasting/contents/<경로>?ref=face-link`)
+- 받는 쪽 Broadcast는 다른 저장소다 (`VideiN/iPadOS-broadcasting`, `face-link` 브랜치, GPL). 두 앱은 프로토콜로만 연결된다. **Broadcast의 코드를 이 저장소에 가져오지 않는다** (이 저장소는 MIT). 참고로 읽는 것은 된다 (`gh api repos/VideiN/iPadOS-broadcasting/contents/<경로>?ref=face-link`). 예외: TestFlight 스크립트 `scripts/testflight.sh`, `scripts/asc.py`는 사용자(두 저장소의 저작자)가 Broadcast의 것을 가져와 쓰라고 했다 (2026-10-25)
 - 프로토콜을 바꾸면 `/FaceLink/Hello`의 버전을 올리고, 두 저장소의 `docs/face-link.md`를 함께 고친다 (FaceLinkKit의 상수도)
 - 의존성은 Apple 프레임워크만 쓴다 (OSC 인코더도 직접 만든다)
 
@@ -15,7 +15,8 @@ Face Link: 아이폰 TrueDepth 얼굴 추적 수치(블렌드셰이프 52개, �
 사용자는 Windows만 쓰고 Mac이 없다. **빌드는 GitHub Actions(`.github/workflows/ios.yml`, `macos-26` 러너)에서만 된다.** 이 PC에서는 Swift를 컴파일할 수 없으므로, push한 뒤 CI 결과로 확인한다 (`gh run watch`, `gh run view --log-failed`).
 
 - 잡 `simulator`: 수신기 시험(`python3 -m unittest discover -s scripts -v`) → `swift test --package-path FaceLinkKit` → 시뮬레이터용 빌드 → `scripts/ci-run-simulator.sh`: 파이썬 수신기를 띄우고 앱을 `-autotest-send 127.0.0.1:39539`로 띄워 시험 송신을 받는다. 수신기가 형식·Ack·Calibrate를, 스크립트가 앱 로그(`build: #<실행 번호> `, `sender: …`)를 확인한다. 로그·수신기 결과·스크린숏은 아티팩트 `app-simulator-run`
-- 잡 `ipa`: 기기용 빌드 → 가짜 서명 IPA, 아티팩트 `facelink-ipa-<실행 번호>`. 사용자는 LiveContainer로 설치한다
+- 잡 `ipa`: 기기용 빌드 → 가짜 서명 IPA, 아티팩트 `facelink-ipa-<실행 번호>` (LiveContainer용). 번들에 아이콘·개인정보 매니페스트·TestFlight에 필요한 Info.plist 키가 있는지도 본다
+- 잡 `testflight`·`testflight-check`: main 푸시나 수동 실행("TestFlight에 올리기")에서만. `ipa`의 IPA를 `scripts/testflight.sh`가 배포 인증서로 다시 서명해 올리고, `scripts/asc.py wait-build`가 처리 완료를 기다린다. 비밀값은 GitHub `testflight` 환경에 있다 (배포 브랜치 main, testflight). 사용자는 이제 TestFlight로 설치한다
 - Mac에서라면: `bash scripts/install-xcodegen.sh`, `bash scripts/build.sh simulator|device`, `swift test --package-path FaceLinkKit --filter <시험 이름>`
 - `FaceLink.xcodeproj`는 저장소에 없다. `project.yml`(XcodeGen)에서 `scripts/build.sh`가 매번 만든다. 파일·설정을 더하면 `project.yml`을 고친다
 - Python 스크립트는 이 PC에서도 돌릴 수 있다: `python -m unittest discover -s scripts -v`. `scripts/facelink_receiver.py`는 PC에서 실기기가 보내는 값을 보는 데도 쓴다 (인자 없이 실행)
