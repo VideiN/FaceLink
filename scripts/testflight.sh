@@ -40,6 +40,25 @@ if [ ${#missing[@]} -gt 0 ]; then
   echo "::error::secrets missing in the testflight environment: ${missing[*]}"
   exit 1
 fi
+# App Store Connect API 키의 형식을 먼저 본다 (값은 찍지 않고 길이만). 앞뒤 공백·줄바꿈은 지운다
+ASC_KEY_ID=$(printf '%s' "$ASC_KEY_ID" | tr -d '[:space:]')
+ASC_ISSUER_ID=$(printf '%s' "$ASC_ISSUER_ID" | tr -d '[:space:]')
+bad=0
+if ! [[ $ASC_KEY_ID =~ ^[A-Z0-9]{10}$ ]]; then
+  hint=""
+  [[ $ASC_KEY_ID == *PRIVATE* ]] && hint="; it looks like the .p8 contents, which belong in ASC_KEY_P8"
+  echo "::error::ASC_KEY_ID should be the 10-character key ID from App Store Connect > Users and Access > Integrations (it has ${#ASC_KEY_ID} characters$hint)"
+  bad=1
+fi
+if ! [[ $ASC_ISSUER_ID =~ ^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$ ]]; then
+  echo "::error::ASC_ISSUER_ID should be the issuer ID (a UUID like 12345678-1234-1234-1234-123456789012; it has ${#ASC_ISSUER_ID} characters)"
+  bad=1
+fi
+if [[ $ASC_KEY_P8 != *"BEGIN PRIVATE KEY"* ]]; then
+  echo "::error::ASC_KEY_P8 should be the whole AuthKey_<key ID>.p8 file, including the BEGIN/END PRIVATE KEY lines"
+  bad=1
+fi
+[ $bad -eq 0 ] || exit 1
 
 # 1. 프로필: App Store용이고 이 앱의 App ID인지
 profile="$work/profile.mobileprovision"
