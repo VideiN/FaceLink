@@ -31,3 +31,12 @@ private let arkitNamesInAppendixA = [
 @Test func arkitNamesMatchAppendixA() {
     #expect(BlendShape.allCases.map(\.arkitName) == arkitNamesInAppendixA)
 }
+
+/// ARKit이 주는 문자열로 찾기 (ARKit 얼굴 추적 → FaceFrame)
+@Test func lookupByARKitName() {
+    for (shape, arkitName) in zip(BlendShape.allCases, arkitNamesInAppendixA) {
+        #expect(BlendShape(arkitName: arkitName) == shape)
+    }
+    #expect(BlendShape(arkitName: "EyeBlinkLeft") == nil)
+    #expect(BlendShape(arkitName: "eyeBlinkLeft") == nil)
+}

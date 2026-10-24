@@ -4,7 +4,7 @@
 
 - 프로토콜: FaceLink v1. [VMC 프로토콜](https://protocol.vmc.info/english)(OSC/UDP, 포트 39539)과 호환되므로 VSeeFace처럼 VMC를 받는 프로그램에도 보낼 수 있다
 - 설계와 프로토콜: [docs/face-link.md](docs/face-link.md) (Broadcast 저장소와 같은 문서)
-- 지금은 만드는 중이다: 보내기와 시험 송신(합성 얼굴), 보낼 곳 고르기(Bonjour, QR, 직접 입력)까지 있고 ARKit 얼굴 추적은 아직 없다
+- 지금은 만드는 중이다: ARKit 얼굴 추적과 정면 보정, 시험 송신(합성 얼굴), 보낼 곳 고르기(Bonjour, QR, 직접 입력)까지 있다. 미리보기·어둡게 모드 같은 화면은 아직 없다
 
 ## 받기와 설치
 

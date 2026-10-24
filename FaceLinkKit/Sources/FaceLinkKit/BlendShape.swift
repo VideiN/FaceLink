@@ -65,6 +65,14 @@ public enum BlendShape: String, CaseIterable, Sendable {
     /// 보내는 이름 (`/VMC/Ext/Blend/Val`의 첫 인자)
     public var name: String { rawValue }
 
+    private static let byARKitName = Dictionary(uniqueKeysWithValues: allCases.map { ($0.arkitName, $0) })
+
+    /// ARKit의 원래 문자열(`ARFaceAnchor.BlendShapeLocation.rawValue`)에서. 모르는 이름이면 nil
+    public init?(arkitName: String) {
+        guard let shape = Self.byARKitName[arkitName] else { return nil }
+        self = shape
+    }
+
     /// ARKit의 원래 문자열 (`ARFaceAnchor.BlendShapeLocation.rawValue`, 예: "eyeBlink_L").
     /// 끝의 Left/Right는 _L/_R이 되지만 jawLeft·jawRight·mouthLeft·mouthRight는 그대로다.
     public var arkitName: String {

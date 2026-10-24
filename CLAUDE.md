@@ -24,7 +24,9 @@ Face Link: 아이폰 TrueDepth 얼굴 추적 수치(블렌드셰이프 52개, �
 
 - `FaceLinkKit/`: 로컬 Swift 패키지, Swift 6 언어 모드. UI·ARKit과 상관없는 것은 모두 여기 둔다: OSC 인코딩·디코딩, FaceLink 메시지와 프레임 나누기, 좌표 변환·정면 보정, 보낼 곳(`FaceLinkTarget`), 보내는 쪽(`FaceLinkSender`, Network.framework), 시험 송신용 합성 얼굴. macOS에서 `swift test`로 시뮬레이터 없이 시험한다 (보내는 쪽은 루프백 UDP 소켓으로)
 - `FaceLinkSender`와 얼굴 공급원(`FaceFrameSource`)은 자기 DispatchQueue에서만 상태를 만지는 `@unchecked Sendable` 클래스다. 정면 보정도 보내는 쪽이 한다 (보내는 값이 보정 뒤 값이므로). 화면은 `currentStatus`를 1초마다 읽는다
-- `FaceLink/`: 앱 (SwiftUI). 기본 격리가 `MainActor`다 (`SWIFT_DEFAULT_ACTOR_ISOLATION`). ARKit 콜백처럼 메인 밖에서 도는 코드는 `nonisolated`를 붙인다. 로그는 `log()`(표준 출력)이고, CI가 줄을 찾으므로 로그 문구를 바꾸면 `scripts/ci-run-simulator.sh`도 고친다
+- `FaceLink/`: 앱 (SwiftUI). 기본 격리가 `MainActor`다 (`SWIFT_DEFAULT_ACTOR_ISOLATION`). 메인 밖에서 도는 타입은 `nonisolated`를 붙인다 (예: `ARKitFaceSource`는 `nonisolated final class`이고 ARSession 콜백을 자기 큐에서 받는다)
+- `ARKitFaceSource`: ARKit 얼굴 추적 → `FaceFrame`. 머리 자세는 화면 방향으로 돌린 카메라 기준(`camera.viewMatrix(for:) × faceAnchor.transform`)이라 보정 전에도 머리를 세우면 roll이 0이다. 시뮬레이터에서는 지원하지 않으므로(`isSupported` false) CI는 시험 송신만 돈다
+- 로그는 `log()`: 표준 출력과, 앱의 "기록" 화면(최근 1,000줄, 공유 가능. 실기기 시험 때 사용자에게 받는다). CI가 줄을 찾으므로 로그 문구를 바꾸면 `scripts/ci-run-simulator.sh`도 고친다
 - 빌드 정보: `scripts/build.sh`가 CI 실행 번호를 버전 `0.1.<번호>`와 빌드 설정 `FACELINK_BUILD_*`로 넘기고 → `FaceLink/Info.plist`의 `FaceLinkBuild` → `BuildInfo.swift`. 설치한 앱이 어느 빌드인지 기기에서 보이게 하려는 것이다 (설계 문서 4.3)
 - 시뮬레이터에서는 ARKit 얼굴 추적이 안 된다. 그래서 시험 송신 모드(합성 얼굴)로 CI에서 보내기를 끝까지 확인한다. 실행 인자는 `AppModel.runAutoTest`
 

@@ -22,49 +22,96 @@ struct ContentView: View {
                 }
 
                 Section {
-                    Button(model.isSending ? "멈추기" : "시험 송신 시작") {
-                        if model.isSending {
-                            model.stop()
-                        } else {
-                            model.startTestSend()
+                    if model.isSending {
+                        Button(calibrationTitle) {
+                            model.calibrate()
                         }
+                        .disabled(model.calibrationCountdown != nil)
+                        Button("멈추기", role: .destructive) {
+                            model.stop()
+                        }
+                    } else {
+                        Button("얼굴 추적 보내기 시작") {
+                            model.start(.face)
+                        }
+                        .disabled(model.target == nil || !AppModel.isFaceTrackingSupported)
+                        Button("시험 송신 시작") {
+                            model.start(.test)
+                        }
+                        .disabled(model.target == nil)
                     }
-                    .disabled(!model.isSending && model.target == nil)
-                    Button("정면 맞추기") {
-                        model.calibrate()
-                    }
-                    .disabled(!model.isSending)
                 } header: {
-                    Text("시험 송신")
+                    Text("보내기")
                 } footer: {
-                    Text("얼굴 없이 합성 값(눈 깜빡임, 입 벌림, 머리 좌우)을 보냅니다.")
+                    Text(sendFooter)
                 }
 
                 if model.isSending {
-                    StatusSection(status: model.status)
+                    StatusSection(model: model)
                 }
+
+                Section {
+                    Picker("보내는 속도", selection: $model.frameRate) {
+                        Text("60Hz").tag(60)
+                        Text("30Hz").tag(30)
+                    }
+                    Toggle("눈 방향 보내기", isOn: $model.sendEyes)
+                    Toggle("머리 위치 보내기", isOn: $model.sendHeadPosition)
+                } header: {
+                    Text("설정")
+                } footer: {
+                    Text("30Hz는 발열과 배터리를 줄입니다. 보내는 동안에는 바꿀 수 없습니다.")
+                }
+                .disabled(model.isSending)
 
                 Section("정보") {
                     LabeledContent("빌드", value: "\(build.summary) · \(build.version)")
                     LabeledContent("프로토콜", value: "FaceLink v\(FaceLinkProtocol.version) · 기본 포트 \(String(FaceLinkProtocol.defaultPort))")
+                    NavigationLink("기록") {
+                        LogView()
+                    }
                 }
             }
             .navigationTitle("Face Link")
         }
     }
+
+    private var calibrationTitle: String {
+        if let remaining = model.calibrationCountdown {
+            return "정면을 보세요… \(remaining)"
+        }
+        return "정면 맞추기 (\(AppModel.calibrationDelay)초 뒤)"
+    }
+
+    private var sendFooter: String {
+        if model.isSending {
+            return "정면 맞추기를 누르고 \(AppModel.calibrationDelay)초 안에 정면(방송 화면 쪽)을 보세요. 다른 앱으로 가거나 화면이 꺼지면 얼굴 추적이 멈춥니다."
+        }
+        if !AppModel.isFaceTrackingSupported {
+            return "이 기기는 얼굴 추적을 지원하지 않습니다 (Face ID가 있는 아이폰이 필요합니다). 시험 송신은 얼굴 없이 합성 값(눈 깜빡임, 입 벌림, 머리 좌우)을 보냅니다."
+        }
+        return "얼굴 추적은 앱을 앞에 켜 둔 동안만 됩니다. 시험 송신은 얼굴 없이 합성 값(눈 깜빡임, 입 벌림, 머리 좌우)을 보냅니다."
+    }
 }
 
 struct StatusSection: View {
-    let status: FaceLinkSender.Status
+    let model: AppModel
+
+    private var status: FaceLinkSender.Status { model.status }
 
     var body: some View {
         Section("상태") {
+            LabeledContent("얼굴", value: faceText)
             LabeledContent("보내는 속도", value: "\(status.sendFPS) fps")
             LabeledContent("받는 쪽", value: receiverText)
             if let roundTrip = status.roundTrip, status.isResponding {
                 LabeledContent("왕복 지연", value: "\(Int(roundTrip * 1000)) ms")
             }
             LabeledContent("정면 보정", value: status.isCalibrated ? "함" : "안 함")
+            if let message = model.faceState?.message {
+                Text(message)
+                    .foregroundStyle(.red)
+            }
             if let problem = status.problem {
                 Text(problem.message)
                     .foregroundStyle(.red)
@@ -72,10 +119,30 @@ struct StatusSection: View {
         }
     }
 
+    private var faceText: String {
+        switch model.mode {
+        case .test: "시험 송신 (합성 값)"
+        case .face: status.framesSent == 0 ? "시작하는 중" : (status.isTracking ? "추적 중" : "얼굴을 찾는 중")
+        case nil: ""
+        }
+    }
+
     private var receiverText: String {
         guard let ack = status.lastAck else { return "기다리는 중" }
         guard status.isResponding else { return "응답 없음" }
         return "\(ack.receiverName) · \(Int(ack.receiverFPS.rounded())) fps"
+    }
+}
+
+extension ARKitFaceSource.State {
+    /// 문제일 때만 문구
+    var message: String? {
+        switch self {
+        case .running: nil
+        case .interrupted: "얼굴 추적이 잠시 멈췄습니다. 다른 앱이 카메라를 쓰고 있거나 앱이 뒤로 갔습니다."
+        case .cameraDenied: "카메라 권한이 꺼져 있습니다. 설정 › Face Link에서 카메라를 켜 주세요."
+        case .failed(let description): "얼굴 추적 오류: \(description)"
+        }
     }
 }
 
