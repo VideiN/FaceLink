@@ -35,7 +35,7 @@ struct TargetPickerView: View {
             } header: {
                 Text("같은 Wi-Fi의 아이패드")
             } footer: {
-                Text("아이패드의 Broadcast에서 얼굴 추적을 켜면 여기에 보입니다. 안 보이면 QR이나 직접 입력을 쓰세요.")
+                Text("아이패드의 Broadcast에서 얼굴 추적을 켜면 여기에 보입니다. 목록이나 직접 입력으로 고르면 처음 보낼 때 아이패드에서 연결 요청을 허락해야 합니다. 안 보이면 QR이나 직접 입력을 쓰세요.")
             }
 
             if QRScannerSheet.isSupported {
@@ -46,7 +46,7 @@ struct TargetPickerView: View {
                         Label("QR 코드 찍기", systemImage: "qrcode.viewfinder")
                     }
                 } footer: {
-                    Text("아이패드 화면의 QR에는 페어링 토큰도 들어 있습니다.")
+                    Text("아이패드 화면의 QR에는 페어링 토큰도 들어 있어 아이패드에서 허락하지 않아도 됩니다.")
                 }
             }
 

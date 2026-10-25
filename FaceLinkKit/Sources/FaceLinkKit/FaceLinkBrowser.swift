@@ -29,6 +29,8 @@ public final class FaceLinkBrowser: @unchecked Sendable {
     private let onChange: @Sendable ([Service]) -> Void
     private let onProblem: @Sendable (NetworkProblem?) -> Void
     private var browser: NWBrowser?
+    /// start()와 stop() 사이. 실패한 뒤 다시 만들지 정한다
+    private var isStarted = false
 
     /// onChange: 찾은 목록이 바뀔 때 (이름순). onProblem: 문제가 생기거나(값) 풀릴 때(nil)
     public init(
@@ -45,27 +47,33 @@ public final class FaceLinkBrowser: @unchecked Sendable {
 
     public func start() {
         queue.async {
-            guard self.browser == nil else { return }
-            let browser = NWBrowser(
-                for: .bonjourWithTXTRecord(type: FaceLinkProtocol.bonjourServiceType, domain: nil),
-                using: NWParameters()
-            )
-            browser.browseResultsChangedHandler = { [weak self] results, _ in
-                self?.resultsChanged(results)
-            }
-            browser.stateUpdateHandler = { [weak self] state in
-                self?.stateChanged(state)
-            }
-            self.browser = browser
-            browser.start(queue: self.queue)
+            self.isStarted = true
+            self.makeBrowser()
         }
     }
 
     public func stop() {
         queue.async {
+            self.isStarted = false
             self.browser?.cancel()
             self.browser = nil
         }
+    }
+
+    private func makeBrowser() {
+        guard isStarted, browser == nil else { return }
+        let browser = NWBrowser(
+            for: .bonjourWithTXTRecord(type: FaceLinkProtocol.bonjourServiceType, domain: nil),
+            using: NWParameters()
+        )
+        browser.browseResultsChangedHandler = { [weak self] results, _ in
+            self?.resultsChanged(results)
+        }
+        browser.stateUpdateHandler = { [weak self] state in
+            self?.stateChanged(state)
+        }
+        self.browser = browser
+        browser.start(queue: queue)
     }
 
     private func resultsChanged(_ results: Set<NWBrowser.Result>) {
@@ -88,8 +96,17 @@ public final class FaceLinkBrowser: @unchecked Sendable {
         switch state {
         case .ready:
             onProblem(nil)
-        case .waiting(let error), .failed(let error):
+        case .waiting(let error):
             onProblem(NetworkProblem(error))
+        case .failed(let error):
+            // 앱이 뒤에 오래 있다 돌아오면 mDNS 연결이 끊겨(-65569 DefunctConnection) 실패한다.
+            // 실패한 NWBrowser는 다시 쓸 수 없으므로 1초 뒤 새로 만든다 (ready가 되면 문제도 지워진다)
+            onProblem(NetworkProblem(error))
+            browser?.cancel()
+            browser = nil
+            queue.asyncAfter(deadline: .now() + 1) { [weak self] in
+                self?.makeBrowser()
+            }
         default:
             break
         }

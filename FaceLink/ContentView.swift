@@ -116,7 +116,22 @@ struct StatusSection: View {
                 Text(problem.message)
                     .foregroundStyle(.red)
             }
+            if let hint = noResponseHint {
+                Text(hint)
+                    .font(.footnote)
+                    .foregroundStyle(.orange)
+            }
         }
+    }
+
+    /// 3초 넘게 Ack가 없을 때 할 일 (docs/face-link.md 3.6). 받는 쪽은 토큰이 빈 Hello(Bonjour·직접 입력)를
+    /// "연결 요청"으로 보이고 사용자가 허락해야 받는다. 틀린 토큰(예전 QR)은 버린다
+    private var noResponseHint: String? {
+        guard !status.isResponding, status.problem == nil, status.framesSent >= model.frameRate * 3 else { return nil }
+        if model.target?.token.isEmpty ?? true {
+            return "아이패드의 Broadcast에 뜬 연결 요청을 허락하거나, 아이패드의 QR을 찍어 주세요."
+        }
+        return "아이패드가 응답하지 않습니다. 아이패드에서 페어링 코드를 다시 만들었다면 QR을 다시 찍어 주세요."
     }
 
     private var faceText: String {
