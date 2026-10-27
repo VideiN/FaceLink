@@ -27,6 +27,13 @@ struct ContentView: View {
                             model.calibrate()
                         }
                         .disabled(model.calibrationCountdown != nil)
+                        if model.features.contains(.audio) {
+                            Button {
+                                model.toggleAudioMute()
+                            } label: {
+                                Label(model.isAudioMuted ? "음소거 풀기" : "음소거", systemImage: model.isAudioMuted ? "mic" : "mic.slash")
+                            }
+                        }
                         Button("멈추기", role: .destructive) {
                             model.stop()
                         }
@@ -66,7 +73,7 @@ struct ContentView: View {
                 } header: {
                     Text("설정")
                 } footer: {
-                    Text("30Hz는 발열과 배터리를 줄입니다. 몸과 소리는 아직 시험 송신에서만 보냅니다 (얼굴 추적에서는 다음 빌드부터). 보내는 동안에는 바꿀 수 없습니다.")
+                    Text("30Hz는 발열과 배터리를 줄입니다. 소리는 얼굴 추적에서는 아이폰 마이크를, 시험 송신에서는 합성 음을 보냅니다. 몸은 아직 시험 송신에서만 보냅니다. 보내는 동안에는 바꿀 수 없습니다.")
                 }
                 .disabled(model.isSending)
 
@@ -114,7 +121,12 @@ struct StatusSection: View {
                 LabeledContent("몸", value: "\(status.bodyFPS) fps\(model.features.contains(.hands) ? " · 손가락 포함" : "")")
             }
             if model.features.contains(.audio) {
-                LabeledContent("소리", value: "48 kHz 모노 · 초당 \(status.audioPacketsPerSecond)개")
+                LabeledContent("소리", value: audioText)
+                AudioLevelRow(model: model)
+            }
+            if model.microphoneDenied {
+                Text("마이크 권한이 꺼져 있어 소리는 보내지 않습니다. 설정 › Face Link에서 마이크를 켜 주세요.")
+                    .foregroundStyle(.red)
             }
             LabeledContent("받는 쪽", value: receiverText)
             if let roundTrip = status.roundTrip, status.isResponding {
@@ -155,10 +167,37 @@ struct StatusSection: View {
         }
     }
 
+    private var audioText: String {
+        if model.isAudioMuted {
+            return "음소거 (보내지 않음)"
+        }
+        let source = model.mode == .test ? "합성 음" : "아이폰 마이크"
+        return "\(source) · 초당 \(status.audioPacketsPerSecond)개"
+    }
+
     private var receiverText: String {
         guard let ack = status.lastAck else { return "기다리는 중" }
         guard status.isResponding else { return "응답 없음" }
         return "\(ack.receiverName) · \(Int(ack.receiverFPS.rounded())) fps"
+    }
+}
+
+/// 소리 입력 레벨 막대. 0.1초마다 바뀌므로 이 행만 다시 그리게 따로 둔다
+struct AudioLevelRow: View {
+    let model: AppModel
+
+    var body: some View {
+        LabeledContent("입력 레벨") {
+            ProgressView(value: Self.meter(model.audioLevel))
+                .tint(model.isAudioMuted ? .gray : .green)
+                .frame(maxWidth: 160)
+        }
+    }
+
+    /// 가장 큰 값(0~1) → -60~0 dBFS를 0~1로
+    static func meter(_ peak: Float) -> Double {
+        let decibels = 20 * log10(max(Double(peak), 0.001))
+        return min(max((decibels + 60) / 60, 0), 1)
     }
 }
 
@@ -169,6 +208,8 @@ extension ARKitFaceSource.State {
         case .running: nil
         case .interrupted: "얼굴 추적이 잠시 멈췄습니다. 다른 앱이 카메라를 쓰고 있거나 앱이 뒤로 갔습니다."
         case .cameraDenied: "카메라 권한이 꺼져 있습니다. 설정 › Face Link에서 카메라를 켜 주세요."
+        // AppModel이 microphoneDenied로 받아 상태 칸에 따로 보인다 (권한을 미리 물었을 때와 같은 문구)
+        case .microphoneDenied: nil
         case .failed(let description): "얼굴 추적 오류: \(description)"
         }
     }

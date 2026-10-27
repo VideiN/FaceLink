@@ -32,6 +32,8 @@
 	<false/>
 	<key>NSCameraUsageDescription</key>
 	<string>전면 TrueDepth 카메라로 얼굴을 추적하고, 아이패드의 QR 코드를 찍습니다. 영상은 보내지 않고 표정과 머리 방향 수치만 보냅니다.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>설정에서 "소리 보내기"를 켜면 아이폰 마이크 소리를 같은 Wi-Fi의 아이패드(Broadcast)로 보냅니다. 녹음해 저장하지 않습니다.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>같은 Wi-Fi의 아이패드(Broadcast)를 찾고 얼굴 수치를 보냅니다.</string>
 	<key>NSBonjourServices</key>

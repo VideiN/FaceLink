@@ -87,6 +87,9 @@ public final class FaceLinkSender: @unchecked Sendable {
         /// v1.1: 보낸 소리 패킷 (지난 1초, 모두)
         public var audioPacketsPerSecond = 0
         public var audioPacketsSent = 0
+        /// v1.1: 지난 1초 동안 들어온 소리의 가장 큰 값 (0~1, 음소거 중에도 잰다)
+        public var audioPeak: Float = 0
+        public var isAudioMuted = false
 
         public init() {}
     }
@@ -116,6 +119,9 @@ public final class FaceLinkSender: @unchecked Sendable {
     private var framesThisSecond = 0
     private var bodyFramesThisSecond = 0
     private var audioPacketsThisSecond = 0
+    private var audioPeakThisSecond: Float = 0
+    /// takeAudioPeak()를 부른 뒤로 가장 큰 값
+    private var audioPeakSinceTake: Float = 0
     private var lastAckTime: TimeInterval?
     private var lastProblemTime: TimeInterval = 0
     private var status = Status()
@@ -159,6 +165,21 @@ public final class FaceLinkSender: @unchecked Sendable {
     public func sendAudio(_ samples: [Int16]) {
         guard configuration.features.contains(.audio) else { return }
         queue.async { self.sendAudioOnQueue(samples) }
+    }
+
+    /// 음소거 (4.7): 표본을 자르개에 넣기 전에 버린다. 패킷이 안 가면 받는 쪽은 0.5초 뒤 무음으로 둔다.
+    /// 다시 켜면 순번이 이어진다 (받는 쪽이 빠진 패킷으로 세지 않게). Hello의 기능에서 audio는 빼지 않는다
+    public func setAudioMuted(_ muted: Bool) {
+        queue.async { self.status.isAudioMuted = muted }
+    }
+
+    /// 지난번에 부른 뒤로 들어온 소리의 가장 큰 값 (0~1, 음소거 중에도). 화면의 레벨 막대가 0.1초마다 읽는다
+    public func takeAudioPeak() -> Float {
+        queue.sync {
+            let peak = audioPeakSinceTake
+            audioPeakSinceTake = 0
+            return peak
+        }
     }
 
     /// 정면 보정: 다음 추적 프레임의 머리 자세를 기준으로 삼는다
@@ -313,9 +334,11 @@ public final class FaceLinkSender: @unchecked Sendable {
         status.sendFPS = framesThisSecond
         status.bodyFPS = bodyFramesThisSecond
         status.audioPacketsPerSecond = audioPacketsThisSecond
+        status.audioPeak = audioPeakThisSecond
         framesThisSecond = 0
         bodyFramesThisSecond = 0
         audioPacketsThisSecond = 0
+        audioPeakThisSecond = 0
         sendHello()
         let responding = lastAckTime.map { now - $0 <= Self.responseTimeout } ?? false
         if responding != status.isResponding {
@@ -374,7 +397,12 @@ public final class FaceLinkSender: @unchecked Sendable {
     }
 
     private func sendAudioOnQueue(_ samples: [Int16]) {
-        guard running, isReady else { return }
+        guard running else { return }
+        // 레벨은 음소거 중에도, 연결이 준비되기 전에도 잰다 (마이크가 살아 있는지 보이게)
+        let peak = Float(samples.lazy.map { Int($0).magnitude }.max() ?? 0) / 32768
+        audioPeakThisSecond = max(audioPeakThisSecond, peak)
+        audioPeakSinceTake = max(audioPeakSinceTake, peak)
+        guard isReady, !status.isAudioMuted else { return }
         for packet in audioPacketizer.packets(appending: samples) {
             sendDatagram(packet)
             audioPacketsThisSecond += 1

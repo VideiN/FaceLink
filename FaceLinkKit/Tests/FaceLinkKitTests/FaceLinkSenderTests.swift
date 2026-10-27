@@ -239,6 +239,49 @@ private func wait(timeout: TimeInterval = 3, until condition: () -> Bool) -> Boo
     #expect(audioPackets == 0)
 }
 
+/// 음소거하면 소리 패킷을 보내지 않고, 풀면 순번이 이어진다. 레벨은 음소거 중에도 잰다
+@Test func senderMutesAudio() throws {
+    let receiver = try LoopbackSocket()
+    let target = FaceLinkTarget(location: .address(host: "127.0.0.1", port: receiver.port), token: "")
+    let sender = FaceLinkSender(configuration: .init(target: target, deviceName: "Test", appVersion: "0.1.0", features: [.audio]))
+    sender.start()
+    defer { sender.stop() }
+
+    var hello: OSCMessage?
+    var sequences: [UInt32] = []
+    func receive(until condition: () -> Bool) -> Bool {
+        wait {
+            if let received = receiver.receive() {
+                if received.bytes.starts(with: FaceLinkAudioPacket.magic) {
+                    sequences.append(received.bytes[8..<12].reduce(UInt32(0)) { $0 << 8 | UInt32($1) })
+                } else if let message = (try? OSCDecoder.messages(in: received.bytes))?.first(where: { $0.address == FaceLinkProtocol.Address.hello }) {
+                    hello = message
+                }
+            }
+            return condition()
+        }
+    }
+    #expect(receive { hello != nil })
+
+    sender.sendAudio([Int16](repeating: 100, count: 480))
+    #expect(receive { sequences.count == 1 })
+    sender.setAudioMuted(true)
+    var loud = [Int16](repeating: 0, count: 960)
+    loud[10] = -16384
+    sender.sendAudio(loud)
+    #expect(wait { sender.currentStatus.isAudioMuted })
+    #expect(abs(sender.takeAudioPeak() - 0.5) < 0.001)
+    #expect(sender.takeAudioPeak() == 0)
+
+    sender.setAudioMuted(false)
+    sender.sendAudio([Int16](repeating: 100, count: 480))
+    #expect(receive { sequences.count == 2 })
+    #expect(sequences == [1, 2])
+    #expect(sender.currentStatus.audioPacketsSent == 2)
+    // 음소거해도 Hello의 기능은 그대로
+    #expect(hello?.arguments.last == .string("face,audio"))
+}
+
 /// 시각을 직접 넣어 시험한다 (CI에서는 Thread.sleep이 한참 늦을 수 있다)
 @Test func frameRateLimiter() {
     func sentCount(frameRate: Int, times: [TimeInterval]) -> Int {
