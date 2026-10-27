@@ -147,7 +147,7 @@ final class AppModel {
             if features.contains(.audio) {
                 audio = { [sender] samples in sender.sendAudio(samples) }
             }
-            source =SyntheticFaceSource(frameRate: frameRate, hands: features.contains(.hands), handler: handler, body: body, audio: audio)
+            source = SyntheticFaceSource(frameRate: frameRate, hands: features.contains(.hands), handler: handler, body: body, audio: audio)
         case .face:
             source = ARKitFaceSource(frameRate: frameRate, orientation: interfaceOrientation, handler: handler) { [weak self] state in
                 guard let self else { return }
