@@ -81,7 +81,7 @@ private func zeroCrossings(_ samples: some Collection<Int16>) -> Int {
         output += try converter.convert(buffer)
     }
     // 변환기가 조금 쥐고 있을 수 있다
-    #expect(output.count > 4800 - 480 && output.count <= 4800 + 2)
+    #expect(output.count > 4800 - 480 && output.count <= 4800 + 2, "\(output.count) samples")
     let peak = output.map { Int($0).magnitude }.max() ?? 0
     #expect(peak > 8000 && peak <= 32768)
     let middle = output.dropFirst(200)
@@ -102,7 +102,7 @@ private func zeroCrossings(_ samples: some Collection<Int16>) -> Int {
         output += try converter.convert(sampleBuffer(int16Buffer(sampleRate: 44100, samples: samples)))
     }
     let expected = 10 * 1024 * 48000 / 44100
-    #expect(output.count > expected - 480 && output.count <= expected + 2)
+    #expect(output.count > expected - 480 && output.count <= expected + 2, "\(output.count) samples")
     let peak = output.map { Int($0).magnitude }.max() ?? 0
     #expect(peak > 6000 && peak < 10000)
     #expect(converter.inputFormat?.summary == "44100 Hz, 1 ch, s16 interleaved")
@@ -113,6 +113,23 @@ private func zeroCrossings(_ samples: some Collection<Int16>) -> Int {
     let converter = MicrophoneConverter()
     #expect(try converter.convert(int16Buffer(sampleRate: 48000, samples: [Int16](repeating: 1000, count: 480))).count == 480)
     let output = try converter.convert(floatBuffer(sampleRate: 24000, channels: 1, frames: 2400) { _ in 0.25 })
-    #expect(output.count > 4800 - 480 && output.count <= 4800 + 2)
+    #expect(output.count > 4800 - 480 && output.count <= 4800 + 2, "\(output.count) samples")
     #expect(converter.inputFormat?.sampleRate == 24000)
+}
+
+/// 큰 버퍼(AVAudioEngine 탭은 한 번에 100ms쯤 준다)도 남김없이: 변환기가 달라는 만큼씩 잘라 준다
+@Test func converterTakesLargeBuffers() throws {
+    let converter = MicrophoneConverter()
+    let same = try converter.convert(floatBuffer(sampleRate: 48000, channels: 1, frames: 9600) { index in
+        Float(index % 100) / 200
+    })
+    #expect(same.count == 9600)
+    #expect(abs(Int(same[9599]) - Int(Float(99) / 200 * 32768)) <= 1)
+
+    var total = 0
+    for _ in 0..<5 {
+        total += try converter.convert(int16Buffer(sampleRate: 16000, samples: [Int16](repeating: 4000, count: 3200))).count
+    }
+    // 16 kHz 1초 → 48 kHz 48,000표본
+    #expect(total > 48000 - 480 && total <= 48000 + 2, "\(total) samples")
 }

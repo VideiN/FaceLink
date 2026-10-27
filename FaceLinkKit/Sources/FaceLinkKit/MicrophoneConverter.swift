@@ -77,24 +77,30 @@ public final class MicrophoneConverter {
         guard let output = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: capacity) else {
             throw MicrophoneConverterError.convertFailed("no output buffer")
         }
-        // 입력 블록은 convert 안에서 바로 불린다. 이번 표본을 한 번만 주고, 다음부터는 "아직 없음"(변환기는 이어서 쓴다)
-        nonisolated(unsafe) let pending = input
-        nonisolated(unsafe) var given = false
-        var error: NSError?
-        let status = converter.convert(to: output, error: &error) { _, inputStatus in
-            if given {
-                inputStatus.pointee = .noDataNow
-                return nil
+        // 입력 블록은 convert 안에서 바로 불린다. 변환기가 달라는 만큼씩 잘라 주고(더 주면 남는 것을 버린다),
+        // 다 주면 "아직 없음"(변환기는 다음 표본과 이어 쓴다). 출력이 차면 더 돌린다
+        nonisolated(unsafe) let slicer = InputSlicer(input)
+        var samples: [Int16] = []
+        var status: AVAudioConverterOutputStatus
+        repeat {
+            output.frameLength = 0
+            var error: NSError?
+            status = converter.convert(to: output, error: &error) { requested, inputStatus in
+                guard let slice = slicer.next(upTo: requested) else {
+                    inputStatus.pointee = .noDataNow
+                    return nil
+                }
+                inputStatus.pointee = .haveData
+                return slice
             }
-            given = true
-            inputStatus.pointee = .haveData
-            return pending
-        }
-        if status == .error {
-            throw MicrophoneConverterError.convertFailed(error?.localizedDescription ?? "unknown")
-        }
-        guard output.frameLength > 0, let data = output.int16ChannelData else { return [] }
-        return Array(UnsafeBufferPointer(start: data[0], count: Int(output.frameLength)))
+            if status == .error {
+                throw MicrophoneConverterError.convertFailed(error?.localizedDescription ?? "unknown")
+            }
+            if output.frameLength > 0, let data = output.int16ChannelData {
+                samples += UnsafeBufferPointer(start: data[0], count: Int(output.frameLength))
+            }
+        } while status == .haveData && !slicer.isEmpty
+        return samples
     }
 
     /// 형식이 같으면 지금 것을, 바뀌었으면 새로 만든다
@@ -111,6 +117,40 @@ public final class MicrophoneConverter {
         self.converter = converter
         inputFormat = format
         return converter
+    }
+}
+
+/// 입력 버퍼를 앞에서부터 잘라 준다. 다 들어가면 자르지 않고 그대로
+private final class InputSlicer {
+    private let buffer: AVAudioPCMBuffer
+    private var offset: AVAudioFrameCount = 0
+
+    init(_ buffer: AVAudioPCMBuffer) {
+        self.buffer = buffer
+    }
+
+    var isEmpty: Bool { offset >= buffer.frameLength }
+
+    func next(upTo maximum: AVAudioPacketCount) -> AVAudioPCMBuffer? {
+        let remaining = buffer.frameLength - min(offset, buffer.frameLength)
+        guard remaining > 0, maximum > 0 else { return nil }
+        if offset == 0 && remaining <= maximum {
+            offset = buffer.frameLength
+            return buffer
+        }
+        let count = min(remaining, maximum)
+        guard let slice = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: count) else { return nil }
+        slice.frameLength = count
+        // PCM은 버퍼(채널마다 따로면 채널마다)마다 한 프레임이 mBytesPerFrame바이트
+        let bytesPerFrame = Int(buffer.format.streamDescription.pointee.mBytesPerFrame)
+        let source = UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList)
+        let target = UnsafeMutableAudioBufferListPointer(slice.mutableAudioBufferList)
+        for (from, to) in zip(source, target) {
+            guard let fromData = from.mData, let toData = to.mData else { continue }
+            toData.copyMemory(from: fromData + Int(offset) * bytesPerFrame, byteCount: Int(count) * bytesPerFrame)
+        }
+        offset += count
+        return slice
     }
 }
 
