@@ -70,7 +70,7 @@ public final class MicrophoneConverter {
 
     private func convertBuffer(_ input: AVAudioPCMBuffer) throws -> [Int16] {
         guard input.frameLength > 0 else { return [] }
-        let converter = try converter(for: input.format)
+        let converter = try makeConverter(for: input.format)
         // 표본률을 바꾸면 변환기가 쥐고 있던 표본이 같이 나올 수 있어 넉넉히
         let ratio = outputFormat.sampleRate / input.format.sampleRate
         let capacity = AVAudioFrameCount((Double(input.frameLength) * ratio).rounded(.up)) + 256
@@ -97,7 +97,8 @@ public final class MicrophoneConverter {
         return Array(UnsafeBufferPointer(start: data[0], count: Int(output.frameLength)))
     }
 
-    private func converter(for format: AVAudioFormat) throws -> AVAudioConverter {
+    /// 형식이 같으면 지금 것을, 바뀌었으면 새로 만든다
+    private func makeConverter(for format: AVAudioFormat) throws -> AVAudioConverter {
         if let converter, format == inputFormat {
             return converter
         }
