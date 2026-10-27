@@ -138,9 +138,16 @@ final class AppModel {
         let source: any FaceFrameSource
         switch mode {
         case .test:
-            let body: (@Sendable (BodyPose) -> Void)? = features.contains(.body) ? { [sender] pose in sender.sendBody(pose) } : nil
-            let audio: (@Sendable ([Int16]) -> Void)? = features.contains(.audio) ? { [sender] samples in sender.sendAudio(samples) } : nil
-            source = SyntheticFaceSource(frameRate: frameRate, hands: features.contains(.hands), handler: handler, body: body, audio: audio)
+            // 삼항 연산자 안의 클로저는 @Sendable로 추론되지 않아 if로 넣는다
+            var body: (@Sendable (BodyPose) -> Void)?
+            var audio: (@Sendable ([Int16]) -> Void)?
+            if features.contains(.body) {
+                body = { [sender] pose in sender.sendBody(pose) }
+            }
+            if features.contains(.audio) {
+                audio = { [sender] samples in sender.sendAudio(samples) }
+            }
+            source =SyntheticFaceSource(frameRate: frameRate, hands: features.contains(.hands), handler: handler, body: body, audio: audio)
         case .face:
             source = ARKitFaceSource(frameRate: frameRate, orientation: interfaceOrientation, handler: handler) { [weak self] state in
                 guard let self else { return }
