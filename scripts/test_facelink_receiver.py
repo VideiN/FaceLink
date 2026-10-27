@@ -1,16 +1,25 @@
 """facelink_receiver.py 시험. python3 -m unittest discover -s scripts -v"""
 
+import os
 import socket
 import struct
+import tempfile
 import unittest
+import wave
 
 import facelink_receiver as fr
 
 IDENTITY = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
 
 
-def frame_messages(sequence, tracked=True, values=None, head=IDENTITY, eyes=True):
-    """docs/face-link.md 3.1 순서: Frame → Bone → Val ×52 → Apply"""
+def body_messages(names=("Spine", "LeftUpperArm", "LeftIndexProximal"), root=True):
+    """v1.1 몸: Root → 뼈 (위치 0)"""
+    messages = [fr.encode_message(fr.ROOT_POS, "root", *IDENTITY)] if root else []
+    return messages + [fr.encode_message(fr.BONE_POS, name, *IDENTITY) for name in names]
+
+
+def frame_messages(sequence, tracked=True, values=None, head=IDENTITY, eyes=True, body=None):
+    """docs/face-link.md 3.1 순서: Frame → Bone(머리, 눈) → 몸(v1.1) → Val ×52 → Apply"""
     values = values or {}
     messages = [fr.encode_message(fr.FRAME, sequence, 1.5, 1 if tracked else 0)]
     if tracked:
@@ -18,10 +27,20 @@ def frame_messages(sequence, tracked=True, values=None, head=IDENTITY, eyes=True
         if eyes:
             for name in ("LeftEye", "RightEye"):
                 messages.append(fr.encode_message(fr.BONE_POS, name, *IDENTITY))
+    messages += body or []
+    if tracked:
         for name in fr.BLEND_SHAPES:
             messages.append(fr.encode_message(fr.BLEND_VAL, name, float(values.get(name, 0.0))))
     messages.append(fr.encode_message(fr.BLEND_APPLY))
     return messages
+
+
+def audio_packet(sequence, frames=480, channels=1, rate=48000, value=1000, kind=1, sample_time=None, extra=b""):
+    """3.8 소리 패킷: 정수는 빅 엔디언, 표본은 s16 리틀 엔디언"""
+    if sample_time is None:
+        sample_time = (sequence - 1) * frames
+    header = fr.AUDIO_MAGIC + bytes([1, kind, channels, 0]) + struct.pack(">IQIHH", sequence, sample_time, rate, frames, 0)
+    return header + struct.pack(f"<{frames * channels}h", *([value] * frames * channels)) + extra
 
 
 def pack(messages, max_size=fr.MAX_DATAGRAM):
@@ -38,8 +57,10 @@ def pack(messages, max_size=fr.MAX_DATAGRAM):
     return bundles
 
 
-def hello(session="S1", token=""):
-    return fr.encode_message(fr.HELLO, "1", "내 iPhone", "0.1.12", session, token)
+def hello(session="S1", token="", features=None):
+    if features is None:
+        return fr.encode_message(fr.HELLO, "1", "내 iPhone", "0.1.12", session, token)
+    return fr.encode_message(fr.HELLO, "1", "내 iPhone", "0.1.12", session, token, features)
 
 
 def feed(checker, datagrams, now=0.0):
@@ -138,6 +159,87 @@ class CheckerTests(unittest.TestCase):
         feed(checker, [fr.encode_message("/VMC/Ext/OK", 1)])
         self.assertEqual(checker.errors, [])
         self.assertEqual(checker.ignored["/VMC/Ext/OK"], 1)
+
+    def test_hello_features(self):
+        checker = fr.Checker()
+        feed(checker, [hello()])
+        self.assertEqual(checker.features, ["face"])  # v1 Hello는 얼굴만
+        feed(checker, [hello(features="face,body,hands,audio")])
+        self.assertEqual(checker.features, ["face", "body", "hands", "audio"])
+        self.assertEqual(checker.errors, [])
+        self.assertError([hello(features="face,smell")], "['smell'] are unknown")
+
+    def test_body_bones(self):
+        checker = fr.Checker()
+        feed(checker, [hello(features="face,body,hands")] + pack(frame_messages(1, body=body_messages()))
+             + pack(frame_messages(2, tracked=False, body=body_messages(root=False))) + pack(frame_messages(3)))
+        self.assertEqual(checker.errors, [])
+        self.assertEqual(checker.body_frames, 2)
+        self.assertEqual(checker.body_bones_seen, {"Spine", "LeftUpperArm", "LeftIndexProximal"})
+        self.assertTrue(checker.root_seen)
+        self.assertEqual(checker.summary()["body_bones_seen"], ["Spine", "LeftUpperArm", "LeftIndexProximal"])
+        self.assertIn("몸 2 fps 뼈 2 손가락 1", checker.status_line(0))
+        self.assertEqual(len(fr.BODY_BONES), 55)
+
+    def test_body_rules(self):
+        self.assertError(pack(frame_messages(1, body=body_messages(["LeftWing"]))), "unknown bone 'LeftWing'")
+        moved = [fr.encode_message(fr.BONE_POS, "Spine", 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0)]
+        self.assertError(pack(frame_messages(1, body=moved)), "bone Spine position is not 0")
+        messages = frame_messages(1)
+        late_root = messages[:-1] + body_messages([])[:1] + messages[-1:]
+        self.assertError(pack(late_root), "Root/Pos after Blend/Val")
+        self.assertError(pack(frame_messages(1, body=body_messages(["Head"], root=False))), "bone Head twice")
+
+    def test_audio_packets(self):
+        checker = fr.Checker()
+        # 3을 잃고(4가 먼저 옴), 3은 늦게 온다
+        feed(checker, [audio_packet(1), audio_packet(2), audio_packet(4), audio_packet(3)])
+        self.assertEqual(checker.errors, [])
+        self.assertEqual((checker.audio_packets, checker.audio_lost, checker.audio_late), (4, 1, 1))
+        self.assertEqual((checker.audio_rate, checker.audio_channels, checker.audio_peak), (48000, 1, 1000))
+        self.assertEqual(checker.audio_time_jumps, 0)
+        self.assertIn("소리 48000 Hz", checker.status_line(0))
+        # 순번은 넘치면 0부터
+        wrapping = fr.Checker()
+        feed(wrapping, [audio_packet(2 ** 32 - 1, sample_time=0), audio_packet(0, sample_time=480)])
+        self.assertEqual((wrapping.audio_lost, wrapping.audio_late, wrapping.audio_time_jumps), (0, 0, 0))
+
+    def test_audio_rules(self):
+        self.assertError([audio_packet(1, extra=b"\0\0")], "bytes for 480 frames")
+        self.assertError([audio_packet(1, kind=2)], "format 2")
+        self.assertError([audio_packet(1, rate=4000)], "sample rate 4000")
+        self.assertError([audio_packet(1, channels=3)], "3 channels")
+        self.assertError([fr.AUDIO_MAGIC + bytes(10)], "(< 28)")
+        self.assertError([audio_packet(1), audio_packet(2, rate=44100)], "format changed")
+
+    def test_save_audio(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "out.wav")
+            checker = fr.Checker(save_audio=path)
+            feed(checker, [audio_packet(1, value=100), audio_packet(3, value=300)])
+            checker.close()
+            with wave.open(path, "rb") as file:
+                self.assertEqual((file.getnchannels(), file.getsampwidth(), file.getframerate()), (1, 2, 48000))
+                self.assertEqual(file.getnframes(), 3 * 480)  # 잃은 2는 무음
+                samples = struct.unpack(f"<{3 * 480}h", file.readframes(3 * 480))
+        self.assertEqual((samples[0], samples[480], samples[960]), (100, 0, 300))
+
+    def test_feature_failures(self):
+        checker = fr.Checker()
+        feed(checker, [hello(features="face,body,hands,audio")] + pack(frame_messages(1, body=body_messages()))
+             + [audio_packet(1, value=5000)])
+        good = {"average_body_fps": 30, "audio_packets_per_second": 100}
+        self.assertEqual(fr.feature_failures(checker, good, ["face", "body", "hands", "audio"]), [])
+        slow = {"average_body_fps": 2, "audio_packets_per_second": 10}
+        failures = fr.feature_failures(checker, slow, ["body", "audio"])
+        self.assertTrue(any("body frames average 2" in failure for failure in failures), failures)
+        self.assertTrue(any("audio 10 packets/s" in failure for failure in failures), failures)
+        face_only = fr.Checker()
+        feed(face_only, [hello()] + pack(frame_messages(1)))
+        failures = fr.feature_failures(face_only, good, ["face", "hands", "audio"])
+        self.assertTrue(any("lack ['hands', 'audio']" in failure for failure in failures), failures)
+        self.assertTrue(any("no finger bones" in failure for failure in failures), failures)
+        self.assertTrue(any("nearly silent" in failure for failure in failures), failures)
 
     def test_euler(self):
         yaw, pitch, roll = fr.unity_euler_degrees(0.0, 0.25881905, 0.0, 0.96592583)  # Y축 30도

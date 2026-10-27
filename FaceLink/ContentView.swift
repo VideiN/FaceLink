@@ -57,10 +57,16 @@ struct ContentView: View {
                     }
                     Toggle("눈 방향 보내기", isOn: $model.sendEyes)
                     Toggle("머리 위치 보내기", isOn: $model.sendHeadPosition)
+                    Picker("몸", selection: $model.bodyMode) {
+                        ForEach(BodyMode.allCases, id: \.self) { mode in
+                            Text(mode.title).tag(mode)
+                        }
+                    }
+                    Toggle("소리 보내기", isOn: $model.sendAudio)
                 } header: {
                     Text("설정")
                 } footer: {
-                    Text("30Hz는 발열과 배터리를 줄입니다. 보내는 동안에는 바꿀 수 없습니다.")
+                    Text("30Hz는 발열과 배터리를 줄입니다. 몸과 소리는 아직 시험 송신에서만 보냅니다 (얼굴 추적에서는 다음 빌드부터). 보내는 동안에는 바꿀 수 없습니다.")
                 }
                 .disabled(model.isSending)
 
@@ -87,10 +93,11 @@ struct ContentView: View {
         if model.isSending {
             return "정면 맞추기를 누르고 \(AppModel.calibrationDelay)초 안에 정면(방송 화면 쪽)을 보세요. 다른 앱으로 가거나 화면이 꺼지면 얼굴 추적이 멈춥니다."
         }
+        let test = "시험 송신은 얼굴 없이 합성 값(눈 깜빡임, 입 벌림, 머리 좌우)을 보냅니다. 몸을 켜면 왼팔·왼손가락이 움직이고, 소리를 켜면 입을 따라 커지는 낮은 음이 납니다."
         if !AppModel.isFaceTrackingSupported {
-            return "이 기기는 얼굴 추적을 지원하지 않습니다 (Face ID가 있는 아이폰이 필요합니다). 시험 송신은 얼굴 없이 합성 값(눈 깜빡임, 입 벌림, 머리 좌우)을 보냅니다."
+            return "이 기기는 얼굴 추적을 지원하지 않습니다 (Face ID가 있는 아이폰이 필요합니다). " + test
         }
-        return "얼굴 추적은 앱을 앞에 켜 둔 동안만 됩니다. 시험 송신은 얼굴 없이 합성 값(눈 깜빡임, 입 벌림, 머리 좌우)을 보냅니다."
+        return "얼굴 추적은 앱을 앞에 켜 둔 동안만 됩니다. " + test
     }
 }
 
@@ -103,6 +110,12 @@ struct StatusSection: View {
         Section("상태") {
             LabeledContent("얼굴", value: faceText)
             LabeledContent("보내는 속도", value: "\(status.sendFPS) fps")
+            if model.features.contains(.body) {
+                LabeledContent("몸", value: "\(status.bodyFPS) fps\(model.features.contains(.hands) ? " · 손가락 포함" : "")")
+            }
+            if model.features.contains(.audio) {
+                LabeledContent("소리", value: "48 kHz 모노 · 초당 \(status.audioPacketsPerSecond)개")
+            }
             LabeledContent("받는 쪽", value: receiverText)
             if let roundTrip = status.roundTrip, status.isResponding {
                 LabeledContent("왕복 지연", value: "\(Int(roundTrip * 1000)) ms")

@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""FaceLink v1 받는 쪽 흉내 (docs/face-link.md). 파이썬 표준 라이브러리만 쓴다.
+"""FaceLink v1(v1.1 포함) 받는 쪽 흉내 (docs/face-link.md). 파이썬 표준 라이브러리만 쓴다.
 
 두 가지로 쓴다.
 
 - CI: 앱의 시험 송신을 받아 형식을 확인한다. 문제가 있으면 0이 아닌 값으로 끝난다
     python3 scripts/facelink_receiver.py --duration 10 --calibrate-after 3 \\
-        --expect-token citoken --expect-calibrated-position --summary out.json
-- PC(Windows 등)에서 아이폰이 보내는 값 보기: 1초마다 상태를 한 줄씩 찍는다
-    python scripts/facelink_receiver.py
+        --expect-token citoken --expect-calibrated-position --expect-features face,body,hands,audio --summary out.json
+- PC(Windows 등)에서 아이폰이 보내는 값 보기: 1초마다 상태를 한 줄씩 찍는다.
+  --save-audio로 아이폰이 보내는 소리(3.8)를 WAV 파일로 남긴다
+    python scripts/facelink_receiver.py --save-audio iphone.wav
 
 보내는 쪽에 1초마다 /FaceLink/Ack를, --calibrate-after가 있으면 /FaceLink/Calibrate를 한 번 보낸다 (3.5).
 """
@@ -21,6 +22,7 @@ import struct
 import sys
 import time
 import urllib.parse
+import wave
 
 DEFAULT_PORT = 39539
 MAX_DATAGRAM = 1400
@@ -33,8 +35,26 @@ CALIBRATE = "/FaceLink/Calibrate"
 BLEND_VAL = "/VMC/Ext/Blend/Val"
 BLEND_APPLY = "/VMC/Ext/Blend/Apply"
 BONE_POS = "/VMC/Ext/Bone/Pos"
-FRAME_ADDRESSES = {FRAME, BLEND_VAL, BLEND_APPLY, BONE_POS}
-BONES = {"Head", "LeftEye", "RightEye"}
+ROOT_POS = "/VMC/Ext/Root/Pos"
+FRAME_ADDRESSES = {FRAME, BLEND_VAL, BLEND_APPLY, BONE_POS, ROOT_POS}
+FACE_BONES = {"Head", "LeftEye", "RightEye"}
+# v1.1 몸 뼈 (3.2): Unity HumanBodyBones 55개, 같은 순서
+BODY_BONES = [
+    "Hips", "LeftUpperLeg", "RightUpperLeg", "LeftLowerLeg", "RightLowerLeg", "LeftFoot", "RightFoot", "Spine",
+    "Chest", "Neck", "Head", "LeftShoulder", "RightShoulder", "LeftUpperArm", "RightUpperArm", "LeftLowerArm",
+    "RightLowerArm", "LeftHand", "RightHand", "LeftToes", "RightToes", "LeftEye", "RightEye", "Jaw",
+] + [side + finger + joint
+     for side in ("Left", "Right")
+     for finger in ("Thumb", "Index", "Middle", "Ring", "Little")
+     for joint in ("Proximal", "Intermediate", "Distal")] + ["UpperChest"]
+BONES = set(BODY_BONES)
+FINGER_JOINTS = ("Proximal", "Intermediate", "Distal")
+# v1.1 Hello의 여섯째 인자 (3.3). 없으면 얼굴만
+FEATURES = ("face", "body", "hands", "audio")
+
+# v1.1 소리 패킷 (3.8)
+AUDIO_MAGIC = b"FLAU"
+AUDIO_HEADER = 28
 
 # 부록 A: 보내는 이름 (ARKit 52개, Perfect Sync 표기)
 BLEND_SHAPES = [
@@ -161,13 +181,26 @@ def unity_euler_degrees(qx, qy, qz, qw):
     return tuple(math.degrees(value) for value in (yaw, pitch, roll))
 
 
+def recent_count(times, now):
+    """지난 1초 안의 수 (오래된 것은 지운다)"""
+    while times and now - times[0] > 1.0:
+        times.popleft()
+    return len(times)
+
+
+def is_finger(name):
+    return name.endswith(FINGER_JOINTS)
+
+
 class Checker:
-    """데이터그램을 받아 FaceLink v1 형식을 확인하고 통계를 모은다"""
+    """데이터그램을 받아 FaceLink v1(v1.1) 형식을 확인하고 통계를 모은다.
+    save_audio가 있으면 받은 소리를 그 WAV 파일로 쓴다 (잃은 패킷은 무음으로). 다 쓰면 close()"""
 
     MAX_ERRORS_KEPT = 50
 
-    def __init__(self, expect_token=None):
+    def __init__(self, expect_token=None, save_audio=None):
         self.expect_token = expect_token
+        self.save_audio = save_audio
         self.errors = []
         self.error_count = 0
         self.datagrams = 0
@@ -187,6 +220,26 @@ class Checker:
         self.ignored = collections.Counter()
         self.calibrate_sent_at = None
         self.calibrated_position_seen = False
+        # v1.1 몸
+        self.features = None
+        self.body_frames = 0
+        self.body_times = collections.deque()
+        self.body_bones_seen = set()
+        self.last_body = set()
+        self.root_seen = False
+        # v1.1 소리
+        self.audio_packets = 0
+        self.audio_times = collections.deque()
+        self.audio_lost = 0
+        self.audio_late = 0
+        self.audio_time_jumps = 0
+        self.audio_rate = None
+        self.audio_channels = None
+        self.audio_next_sequence = None
+        self.audio_next_sample_time = None
+        self.audio_peak = 0
+        self.audio_recent_peak = 0
+        self.audio_writer = None
 
     def error(self, message):
         self.error_count += 1
@@ -194,15 +247,21 @@ class Checker:
             self.errors.append(message)
 
     def fps(self, now):
-        while self.frame_times and now - self.frame_times[0] > 1.0:
-            self.frame_times.popleft()
-        return len(self.frame_times)
+        return recent_count(self.frame_times, now)
+
+    def close(self):
+        if self.audio_writer is not None:
+            self.audio_writer.close()
+            self.audio_writer = None
 
     def datagram(self, data, now):
         self.datagrams += 1
         self.max_datagram = max(self.max_datagram, len(data))
         if len(data) > MAX_DATAGRAM:
             self.error(f"datagram is {len(data)} bytes (> {MAX_DATAGRAM})")
+        if data.startswith(AUDIO_MAGIC):
+            self.audio_packet(data, now)
+            return
         try:
             is_bundle, time_tag, messages = parse_packet(data)
         except OSCError as error:
@@ -223,10 +282,15 @@ class Checker:
 
     def hello(self, tags, args):
         self.hellos += 1
-        if tags != "sssss":
-            self.error(f"Hello type tags ,{tags} (expected ,sssss)")
+        if tags not in ("sssss", "ssssss"):
+            self.error(f"Hello type tags ,{tags} (expected ,sssss or v1.1 ,ssssss)")
             return
-        version, device, app_version, session, token = args
+        version, device, app_version, session, token = args[:5]
+        # v1.1: 여섯째 인자 = 지금 보내는 것. v1 Hello는 얼굴만
+        self.features = [feature for feature in (args[5] if len(args) > 5 else "face").split(",") if feature]
+        unknown = [feature for feature in self.features if feature not in FEATURES]
+        if unknown:
+            self.error(f"Hello features {unknown} are unknown")
         if version != PROTOCOL_VERSION:
             self.error(f"Hello protocol version {version!r}")
         if not session:
@@ -277,9 +341,22 @@ class Checker:
             norm = math.sqrt(sum(value * value for value in numbers[3:]))
             if abs(norm - 1) > 1e-3:
                 self.error(f"bone {name} quaternion length {norm:.4f}")
-            if name in ("LeftEye", "RightEye") and any(abs(value) > 1e-6 for value in numbers[:3]):
+            # 위치는 머리만 (눈·몸 뼈는 0, 3.2)
+            if name != "Head" and any(abs(value) > 1e-6 for value in numbers[:3]):
                 self.error(f"bone {name} position is not 0")
             frame["bones"][name] = numbers
+        elif address == ROOT_POS:
+            if not tags.startswith("sfffffff"):
+                self.error(f"Root/Pos type tags ,{tags} (expected ,sfffffff)")
+                return
+            if frame["seen_value"]:
+                self.error("Root/Pos after Blend/Val")
+            if "root" in frame:
+                self.error(f"Root/Pos twice in frame {frame['sequence']}")
+            norm = math.sqrt(sum(value * value for value in args[4:8]))
+            if abs(norm - 1) > 1e-3:
+                self.error(f"Root/Pos quaternion length {norm:.4f}")
+            frame["root"] = args[1:8]
         elif address == BLEND_VAL:
             if tags != "sf":
                 self.error(f"Blend/Val type tags ,{tags} (expected ,sf)")
@@ -313,10 +390,79 @@ class Checker:
         self.last_sequence = frame["sequence"]
         self.frame_times.append(now)
         self.last_frame = frame
+        # v1.1 몸: 얼굴 뼈 말고 뼈가 있거나 Root가 있는 프레임
+        body = set(frame["bones"]) - FACE_BONES
+        if body or "root" in frame:
+            self.body_frames += 1
+            self.body_times.append(now)
+            self.body_bones_seen |= body
+            self.root_seen = self.root_seen or "root" in frame
+            self.last_body = body
         head = frame["bones"].get("Head")
         if self.calibrate_sent_at is not None and now - self.calibrate_sent_at > 0.5 and head:
             if math.sqrt(sum(value * value for value in head[:3])) < 1e-4:
                 self.calibrated_position_seen = True
+
+    def audio_packet(self, data, now):
+        """3.8 소리 패킷: 머리 28바이트(정수는 빅 엔디언), 표본은 s16 리틀 엔디언"""
+        if len(data) < AUDIO_HEADER:
+            self.error(f"audio packet is {len(data)} bytes (< {AUDIO_HEADER})")
+            return
+        version, kind, channels, reserved = data[4:8]
+        sequence, sample_time, rate, frames, reserved2 = struct.unpack(">IQIHH", data[8:AUDIO_HEADER])
+        problems = []
+        if version != 1:
+            problems.append(f"version {version}")
+        if kind != 1:
+            problems.append(f"format {kind} (expected 1 = PCM s16)")
+        if channels not in (1, 2):
+            problems.append(f"{channels} channels")
+        if reserved or reserved2:
+            problems.append("reserved bytes are not 0")
+        if not 8000 <= rate <= 96000:
+            problems.append(f"sample rate {rate}")
+        if not 1 <= frames <= 4096:
+            problems.append(f"{frames} frames")
+        elif channels in (1, 2) and len(data) != AUDIO_HEADER + frames * channels * 2:
+            problems.append(f"{len(data)} bytes for {frames} frames x {channels} ch")
+        if problems:
+            self.error("audio packet: " + ", ".join(problems))
+            return
+
+        self.audio_packets += 1
+        self.audio_times.append(now)
+        if self.audio_rate is not None and (rate, channels) != (self.audio_rate, self.audio_channels):
+            self.error(f"audio format changed from {self.audio_rate} Hz {self.audio_channels} ch to {rate} Hz {channels} ch")
+        self.audio_rate, self.audio_channels = rate, channels
+
+        # 순번: 앞으로 건너뛰면 잃은 것, 뒤로 가면 늦게 온 것 (늦은 것은 버린다, 3.8)
+        missing = 0
+        if self.audio_next_sequence is not None:
+            gap = (sequence - self.audio_next_sequence) % 2 ** 32
+            if gap >= 2 ** 31:
+                self.audio_late += 1
+                return
+            missing = gap
+            self.audio_lost += gap
+        if missing == 0 and self.audio_next_sample_time is not None and sample_time != self.audio_next_sample_time:
+            self.audio_time_jumps += 1
+        self.audio_next_sequence = (sequence + 1) % 2 ** 32
+        self.audio_next_sample_time = sample_time + frames
+
+        samples = struct.unpack(f"<{frames * channels}h", data[AUDIO_HEADER:])
+        peak = max(abs(sample) for sample in samples)
+        self.audio_peak = max(self.audio_peak, peak)
+        self.audio_recent_peak = max(self.audio_recent_peak, peak)
+        if self.save_audio:
+            if self.audio_writer is None:
+                self.audio_writer = wave.open(self.save_audio, "wb")
+                self.audio_writer.setnchannels(channels)
+                self.audio_writer.setsampwidth(2)
+                self.audio_writer.setframerate(rate)
+            if missing:
+                self.audio_writer.writeframes(bytes(missing * frames * channels * 2))
+            # WAV도 리틀 엔디언이라 표본 바이트를 그대로
+            self.audio_writer.writeframes(data[AUDIO_HEADER:])
 
     def status_line(self, now):
         frame = self.last_frame
@@ -335,6 +481,14 @@ class Checker:
             values = frame["values"]
             parts.append(f"입 {values.get('JawOpen', 0):.2f}")
             parts.append(f"눈 감음 L {values.get('EyeBlinkLeft', 0):.2f} R {values.get('EyeBlinkRight', 0):.2f}")
+        if self.body_frames:
+            fingers = sum(1 for name in self.last_body if is_finger(name))
+            parts.append(f"몸 {recent_count(self.body_times, now)} fps 뼈 {len(self.last_body) - fingers} 손가락 {fingers}")
+        if self.audio_packets:
+            # 소리 크기는 지난 줄부터의 최댓값 (dBFS)
+            level = 20 * math.log10(self.audio_recent_peak / 32768) if self.audio_recent_peak else -math.inf
+            self.audio_recent_peak = 0
+            parts.append(f"소리 {self.audio_rate} Hz {recent_count(self.audio_times, now)}개/s {level:.0f} dB 잃음 {self.audio_lost}")
         parts.append(f"오류 {self.error_count}")
         return " · ".join(parts)
 
@@ -351,6 +505,17 @@ class Checker:
             "tracked_frames": self.tracked_frames,
             "last_sequence": self.last_sequence,
             "calibrated_position_seen": self.calibrated_position_seen,
+            "features": self.features,
+            "body_frames": self.body_frames,
+            "body_bones_seen": [name for name in BODY_BONES if name in self.body_bones_seen],
+            "root_seen": self.root_seen,
+            "audio_packets": self.audio_packets,
+            "audio_rate": self.audio_rate,
+            "audio_channels": self.audio_channels,
+            "audio_lost": self.audio_lost,
+            "audio_late": self.audio_late,
+            "audio_time_jumps": self.audio_time_jumps,
+            "audio_peak": self.audio_peak,
             "ignored_addresses": dict(self.ignored),
             "error_count": self.error_count,
             "errors": self.errors,
@@ -446,6 +611,27 @@ def print_connection_help(port, name, token):
     qr.print_ascii(invert=True)
 
 
+def feature_failures(checker, summary, expected):
+    """--expect-features: Hello가 그 기능을 알리고, 실제로 왔는지 (시험 송신: 몸 30Hz, 소리 초당 100개)"""
+    failures = []
+    missing = [feature for feature in expected if feature not in (checker.features or [])]
+    if missing:
+        failures.append(f"Hello features {checker.features} lack {missing}")
+    if "body" in expected:
+        if summary["average_body_fps"] < 10:
+            failures.append(f"body frames average {summary['average_body_fps']} fps < 10")
+        if not checker.body_bones_seen - {name for name in checker.body_bones_seen if is_finger(name)}:
+            failures.append("no body bones other than fingers")
+    if "hands" in expected and not any(is_finger(name) for name in checker.body_bones_seen):
+        failures.append("no finger bones")
+    if "audio" in expected:
+        if summary["audio_packets_per_second"] < 80:
+            failures.append(f"audio {summary['audio_packets_per_second']} packets/s < 80")
+        if checker.audio_peak < 1000:
+            failures.append(f"audio peak {checker.audio_peak} is nearly silent")
+    return failures
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="FaceLink v1 받는 쪽 흉내: 형식 확인과 값 보기")
     parser.add_argument("--host", default="0.0.0.0", help="받을 주소 (기본: 모든 인터페이스)")
@@ -459,6 +645,9 @@ def main(argv=None):
     parser.add_argument("--expect-calibrated-position", action="store_true",
                         help="Calibrate 뒤에 머리 위치가 0인 프레임이 와야 한다 (시험 송신은 머리 위치가 늘 같다)")
     parser.add_argument("--min-fps", type=float, default=0, help="받은 프레임의 평균 fps가 이보다 낮으면 실패")
+    parser.add_argument("--expect-features",
+                        help="v1.1: Hello의 기능에 이것들(쉼표로, 예: face,body,hands,audio)이 있고 실제로 와야 한다")
+    parser.add_argument("--save-audio", help="v1.1: 받은 소리를 이 WAV 파일로 쓴다")
     parser.add_argument("--summary", help="결과를 JSON으로 쓸 파일")
     parser.add_argument("--quiet", action="store_true", help="1초마다 상태를 찍지 않는다")
     args = parser.parse_args(argv)
@@ -475,7 +664,7 @@ def main(argv=None):
     if not args.quiet:
         print_connection_help(args.port, args.name, args.token)
 
-    checker = Checker(expect_token=args.expect_token)
+    checker = Checker(expect_token=args.expect_token, save_audio=args.save_audio)
     receiver = Receiver(sock, args.name, checker, args.calibrate_after)
     start = time.monotonic()
     next_status = start + 1
@@ -497,11 +686,14 @@ def main(argv=None):
         pass
     finally:
         sock.close()
+        checker.close()
 
     summary = checker.summary()
     elapsed = (time.monotonic() - receiver.first_frame_at) if receiver.first_frame_at is not None else 0
     summary["seconds"] = round(elapsed, 2)
     summary["average_fps"] = round(checker.frames / elapsed, 1) if elapsed > 0 else 0
+    summary["average_body_fps"] = round(checker.body_frames / elapsed, 1) if elapsed > 0 else 0
+    summary["audio_packets_per_second"] = round(checker.audio_packets / elapsed, 1) if elapsed > 0 else 0
     summary["acks_sent"] = receiver.acks_sent
     summary["calibrate_sent"] = receiver.calibrate_sent
 
@@ -520,6 +712,8 @@ def main(argv=None):
             failures.append("Calibrate was not sent (use --calibrate-after shorter than --duration)")
         elif not checker.calibrated_position_seen:
             failures.append("no frame with head position 0 after Calibrate")
+    if args.expect_features and not timed_out:
+        failures += feature_failures(checker, summary, [f for f in args.expect_features.split(",") if f])
     summary["failures"] = failures
 
     print(json.dumps(summary, ensure_ascii=False, indent=2))

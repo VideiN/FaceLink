@@ -1,7 +1,7 @@
 import Foundation
 import Network
 
-/// FaceLink v1로 얼굴 프레임을 보내고, 받는 쪽의 Ack·Calibrate를 받는다 (docs/face-link.md 3장).
+/// FaceLink v1로 얼굴 프레임(v1.1: 몸 뼈, 소리 패킷도)을 보내고, 받는 쪽의 Ack·Calibrate를 받는다 (docs/face-link.md 3장).
 /// 보내는 값은 정면 보정 뒤의 값이라 보정도 여기서 한다.
 /// 상태는 모두 `queue`에서만 만진다 (그래서 @unchecked Sendable). 보내기를 시작할 때마다 새로 만든다
 public final class FaceLinkSender: @unchecked Sendable {
@@ -15,6 +15,8 @@ public final class FaceLinkSender: @unchecked Sendable {
         public var frameRate: Int
         public var sendEyes: Bool
         public var sendHeadPosition: Bool
+        /// 보내는 것 (v1.1, Hello의 기능). 얼굴은 늘 들어 있다. body·hands가 없으면 몸을, audio가 없으면 소리를 버린다
+        public var features: Set<FaceLinkFeature>
 
         public init(
             target: FaceLinkTarget,
@@ -22,7 +24,8 @@ public final class FaceLinkSender: @unchecked Sendable {
             appVersion: String,
             frameRate: Int = 60,
             sendEyes: Bool = true,
-            sendHeadPosition: Bool = true
+            sendHeadPosition: Bool = true,
+            features: Set<FaceLinkFeature> = [.face]
         ) {
             self.target = target
             self.deviceName = deviceName
@@ -30,7 +33,10 @@ public final class FaceLinkSender: @unchecked Sendable {
             self.frameRate = frameRate
             self.sendEyes = sendEyes
             self.sendHeadPosition = sendHeadPosition
+            self.features = features.union([.face])
         }
+
+        var sendsBody: Bool { features.contains(.body) || features.contains(.hands) }
     }
 
     /// 로그와 화면에 알릴 일
@@ -75,6 +81,12 @@ public final class FaceLinkSender: @unchecked Sendable {
         public var roundTrip: TimeInterval?
         public var isCalibrated = false
         public var problem: NetworkProblem?
+        /// v1.1: 몸을 얹어 보낸 프레임 (지난 1초, 모두)
+        public var bodyFPS = 0
+        public var bodyFramesSent = 0
+        /// v1.1: 보낸 소리 패킷 (지난 1초, 모두)
+        public var audioPacketsPerSecond = 0
+        public var audioPacketsSent = 0
 
         public init() {}
     }
@@ -98,7 +110,12 @@ public final class FaceLinkSender: @unchecked Sendable {
     private var calibration = HeadCalibration()
     private var calibrationRequested = false
     private var rateLimiter: FrameRateLimiter
+    /// 다음 얼굴 프레임에 얹을 몸 (v1.1)
+    private var pendingBody: BodyPose?
+    private var audioPacketizer = AudioPacketizer()
     private var framesThisSecond = 0
+    private var bodyFramesThisSecond = 0
+    private var audioPacketsThisSecond = 0
     private var lastAckTime: TimeInterval?
     private var lastProblemTime: TimeInterval = 0
     private var status = Status()
@@ -129,6 +146,21 @@ public final class FaceLinkSender: @unchecked Sendable {
         queue.async { self.sendOnQueue(frame) }
     }
 
+    /// 몸 (v1.1): 다음에 보내는 얼굴 프레임에 얹는다 (몸은 15~30Hz, 얼굴은 60Hz라). 공급원 스레드에서 불러도 된다.
+    /// 기능에 body·hands가 없으면 버린다
+    public func sendBody(_ body: BodyPose) {
+        guard configuration.sendsBody else { return }
+        queue.async { self.pendingBody = body }
+    }
+
+    /// 소리 (v1.1, 3.8): 48 kHz 모노 s16 표본을 10ms씩 끊어 얼굴과 같은 연결로 보낸다
+    /// (받는 쪽은 출발 주소·포트로 보내는 쪽을 가리고, 받는 중인 쪽의 소리만 쓴다). 공급원 스레드에서 불러도 된다.
+    /// 기능에 audio가 없거나 연결이 준비되기 전의 표본은 버린다
+    public func sendAudio(_ samples: [Int16]) {
+        guard configuration.features.contains(.audio) else { return }
+        queue.async { self.sendAudioOnQueue(samples) }
+    }
+
     /// 정면 보정: 다음 추적 프레임의 머리 자세를 기준으로 삼는다
     public func calibrate() {
         queue.async { self.calibrationRequested = true }
@@ -148,6 +180,8 @@ public final class FaceLinkSender: @unchecked Sendable {
         guard !running else { return }
         running = true
         session = FaceLinkSession(startTime: Self.now)
+        pendingBody = nil
+        audioPacketizer = AudioPacketizer()
         status = Status()
         status.sessionID = session.id
         status.isCalibrated = calibration.reference != nil
@@ -277,7 +311,11 @@ public final class FaceLinkSender: @unchecked Sendable {
     private func tick() {
         let now = Self.now
         status.sendFPS = framesThisSecond
+        status.bodyFPS = bodyFramesThisSecond
+        status.audioPacketsPerSecond = audioPacketsThisSecond
         framesThisSecond = 0
+        bodyFramesThisSecond = 0
+        audioPacketsThisSecond = 0
         sendHello()
         let responding = lastAckTime.map { now - $0 <= Self.responseTimeout } ?? false
         if responding != status.isResponding {
@@ -297,7 +335,8 @@ public final class FaceLinkSender: @unchecked Sendable {
             deviceName: configuration.deviceName,
             appVersion: configuration.appVersion,
             sessionID: session.id,
-            token: configuration.target.token
+            token: configuration.target.token,
+            features: configuration.features
         )
         sendDatagram(hello.encoded())
     }
@@ -316,14 +355,31 @@ public final class FaceLinkSender: @unchecked Sendable {
         }
         frame.head = calibration.apply(to: frame.head)
 
+        // 건너뛴 프레임 사이에 온 몸도 여기서 보낸다 (가장 새것만)
+        let body = pendingBody
+        pendingBody = nil
+
         let sequence = session.takeSequence()
-        for datagram in encoder.datagrams(for: frame, sequence: sequence, time: session.time(at: now)) {
+        for datagram in encoder.datagrams(for: frame, body: body, sequence: sequence, time: session.time(at: now)) {
             sendDatagram(datagram)
         }
         roundTrips.recordSent(sequence, at: now)
         framesThisSecond += 1
         status.framesSent += 1
         status.isTracking = frame.isTracked
+        if body != nil {
+            bodyFramesThisSecond += 1
+            status.bodyFramesSent += 1
+        }
+    }
+
+    private func sendAudioOnQueue(_ samples: [Int16]) {
+        guard running, isReady else { return }
+        for packet in audioPacketizer.packets(appending: samples) {
+            sendDatagram(packet)
+            audioPacketsThisSecond += 1
+            status.audioPacketsSent += 1
+        }
     }
 
     private func sendDatagram(_ bytes: [UInt8]) {

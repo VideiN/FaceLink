@@ -11,6 +11,29 @@ enum SendMode: String, Sendable {
     case test
 }
 
+/// 설정 "몸" (docs/face-link.md 4.6): 얼굴만, 상체, 상체+손
+enum BodyMode: String, CaseIterable, Sendable {
+    case off
+    case upperBody
+    case upperBodyAndHands
+
+    var title: String {
+        switch self {
+        case .off: "얼굴만"
+        case .upperBody: "상체"
+        case .upperBodyAndHands: "상체+손"
+        }
+    }
+
+    var features: Set<FaceLinkFeature> {
+        switch self {
+        case .off: []
+        case .upperBody: [.body]
+        case .upperBodyAndHands: [.body, .hands]
+        }
+    }
+}
+
 /// 앱 상태: 보낼 곳, 보내기, 설정, 화면에 보일 상태
 @Observable
 final class AppModel {
@@ -29,8 +52,17 @@ final class AppModel {
     var sendHeadPosition: Bool {
         didSet { defaults.set(sendHeadPosition, forKey: Keys.sendHeadPosition) }
     }
+    /// v1.1 몸·소리. 지금은 시험 송신만 따른다 (얼굴 추적의 소리는 계획 8단계, 몸은 9단계)
+    var bodyMode: BodyMode {
+        didSet { defaults.set(bodyMode.rawValue, forKey: Keys.bodyMode) }
+    }
+    var sendAudio: Bool {
+        didSet { defaults.set(sendAudio, forKey: Keys.sendAudio) }
+    }
 
     private(set) var mode: SendMode?
+    /// 지금 보내는 것 (Hello의 기능)
+    private(set) var features: Set<FaceLinkFeature> = []
     var isSending: Bool { mode != nil }
     private(set) var status = FaceLinkSender.Status()
     /// ARKit 얼굴 추적의 상태 (얼굴 추적으로 보낼 때)
@@ -57,6 +89,8 @@ final class AppModel {
         static let frameRate = "frameRate"
         static let sendEyes = "sendEyes"
         static let sendHeadPosition = "sendHeadPosition"
+        static let bodyMode = "bodyMode"
+        static let sendAudio = "sendAudio"
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -64,6 +98,8 @@ final class AppModel {
         frameRate = defaults.object(forKey: Keys.frameRate) as? Int ?? 60
         sendEyes = defaults.object(forKey: Keys.sendEyes) as? Bool ?? true
         sendHeadPosition = defaults.object(forKey: Keys.sendHeadPosition) as? Bool ?? true
+        bodyMode = defaults.string(forKey: Keys.bodyMode).flatMap(BodyMode.init(rawValue:)) ?? .off
+        sendAudio = defaults.object(forKey: Keys.sendAudio) as? Bool ?? false
         if let data = defaults.data(forKey: Keys.lastTarget) {
             lastTarget = try? JSONDecoder().decode(FaceLinkTarget.self, from: data)
         }
@@ -83,13 +119,15 @@ final class AppModel {
             log("face: not supported on this device")
             return
         }
+        let features = sendFeatures(for: mode)
         let configuration = FaceLinkSender.Configuration(
             target: target,
             deviceName: UIDevice.current.name,
             appVersion: BuildInfo.current.version,
             frameRate: frameRate,
             sendEyes: sendEyes,
-            sendHeadPosition: sendHeadPosition
+            sendHeadPosition: sendHeadPosition,
+            features: features
         )
         let sender = FaceLinkSender(configuration: configuration) { event in
             log("sender: \(event)")
@@ -100,7 +138,9 @@ final class AppModel {
         let source: any FaceFrameSource
         switch mode {
         case .test:
-            source = SyntheticFaceSource(frameRate: frameRate, handler: handler)
+            let body: (@Sendable (BodyPose) -> Void)? = features.contains(.body) ? { [sender] pose in sender.sendBody(pose) } : nil
+            let audio: (@Sendable ([Int16]) -> Void)? = features.contains(.audio) ? { [sender] samples in sender.sendAudio(samples) } : nil
+            source = SyntheticFaceSource(frameRate: frameRate, hands: features.contains(.hands), handler: handler, body: body, audio: audio)
         case .face:
             source = ARKitFaceSource(frameRate: frameRate, orientation: interfaceOrientation, handler: handler) { [weak self] state in
                 guard let self else { return }
@@ -110,13 +150,14 @@ final class AppModel {
         self.sender = sender
         self.source = source
         self.mode = mode
+        self.features = features
         faceState = nil
         sender.start()
         source.start()
         remember(target)
         // 화면이 꺼지면 앱이 뒤로 가고 ARKit이 멈춘다 (4.1)
         UIApplication.shared.isIdleTimerDisabled = true
-        log("sender: start \(mode.rawValue) to \(target.addressDescription) (\(target.name)) at \(frameRate) Hz, eyes \(sendEyes), head position \(sendHeadPosition)")
+        log("sender: start \(mode.rawValue) to \(target.addressDescription) (\(target.name)) at \(frameRate) Hz, eyes \(sendEyes), head position \(sendHeadPosition), features \(FaceLinkFeature.list(features))")
 
         // 화면의 상태는 1초마다 고친다 (프레임마다 고치면 메인 스레드가 바쁘다)
         statusTask = Task { [weak self] in
@@ -130,7 +171,7 @@ final class AppModel {
                 (self.source as? ARKitFaceSource)?.setOrientation(self.interfaceOrientation)
                 seconds += 1
                 if seconds % 5 == 0 {
-                    log("sender: stats \(status.sendFPS) fps, sent \(status.framesSent), tracking \(status.isTracking), responding \(status.isResponding)")
+                    log("sender: stats \(status.sendFPS) fps, sent \(status.framesSent), tracking \(status.isTracking), responding \(status.isResponding), body \(status.bodyFPS) fps, audio \(status.audioPacketsPerSecond) packets/s")
                 }
             }
         }
@@ -148,10 +189,23 @@ final class AppModel {
         source = nil
         sender = nil
         mode = nil
+        features = []
         faceState = nil
         status = FaceLinkSender.Status()
         UIApplication.shared.isIdleTimerDisabled = false
         log("sender: stopped")
+    }
+
+    /// 설정의 몸·소리를 따른 기능. 얼굴 추적은 아직 얼굴만 보낸다 (소리는 계획 8단계, 몸은 9단계)
+    private func sendFeatures(for mode: SendMode) -> Set<FaceLinkFeature> {
+        var features: Set<FaceLinkFeature> = [.face]
+        if mode == .test {
+            features.formUnion(bodyMode.features)
+            if sendAudio {
+                features.insert(.audio)
+            }
+        }
+        return features
     }
 
     /// 정면 맞추기: 몇 초 뒤의 머리 자세를 기준으로 (누른 뒤 정면을 볼 시간을 준다).
@@ -227,7 +281,7 @@ final class AppModel {
 }
 
 /// CI가 앱을 띄울 때 주는 실행 인자 (scripts/ci-run-simulator.sh)
-///   -autotest-send <주소>   시험 송신을 바로 시작한다. 주소는 facelink:// QR 주소 또는 "IP:포트"
+///   -autotest-send <주소>   시험 송신을 바로 시작한다 (몸·손가락·소리를 모두 켜고). 주소는 facelink:// QR 주소 또는 "IP:포트"
 ///   -autotest-browse        Bonjour 찾기를 켠다 (찾은 것을 로그로)
 extension AppModel {
     func runAutoTest(arguments: [String]) {
@@ -242,6 +296,8 @@ extension AppModel {
         }
         log("autotest: send to \(value)")
         choose(target)
+        bodyMode = .upperBodyAndHands
+        sendAudio = true
         start(.test)
     }
 }

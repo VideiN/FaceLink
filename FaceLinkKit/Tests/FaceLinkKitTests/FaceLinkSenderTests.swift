@@ -148,6 +148,97 @@ private func wait(timeout: TimeInterval = 3, until condition: () -> Bool) -> Boo
     #expect(sender.currentStatus.isCalibrated)
 }
 
+/// v1.1: Hello의 기능, 다음 얼굴 프레임에 얹는 몸, 얼굴과 같은 출발 포트로 오는 소리 패킷
+@Test func senderSendsBodyAndAudio() throws {
+    let receiver = try LoopbackSocket()
+    let target = FaceLinkTarget(location: .address(host: "127.0.0.1", port: receiver.port), token: "")
+    let sender = FaceLinkSender(
+        configuration: .init(target: target, deviceName: "Test", appVersion: "0.1.0", features: [.body, .hands, .audio])
+    )
+    sender.start()
+    defer { sender.stop() }
+
+    var messages: [OSCMessage] = []
+    var audioPackets: [[UInt8]] = []
+    var ports: Set<UInt16> = []
+    func receive(until condition: () -> Bool) -> Bool {
+        wait {
+            if let received = receiver.receive() {
+                ports.insert(received.from.sin_port)
+                if received.bytes.starts(with: FaceLinkAudioPacket.magic) {
+                    audioPackets.append(received.bytes)
+                } else {
+                    messages += (try? OSCDecoder.messages(in: received.bytes)) ?? []
+                }
+            }
+            return condition()
+        }
+    }
+    func boneNames() -> [String] {
+        messages.compactMap { message in
+            guard message.address == FaceLinkProtocol.Address.bonePosition, case .string(let name) = message.arguments.first else { return nil }
+            return name
+        }
+    }
+
+    #expect(receive { messages.contains { $0.address == FaceLinkProtocol.Address.hello } })
+    let hello = try #require(messages.first { $0.address == FaceLinkProtocol.Address.hello })
+    #expect(hello.arguments.last == .string("face,body,hands,audio"))
+
+    sender.sendBody(SyntheticFace.body(at: 0.5, hands: true))
+    sender.send(SyntheticFace.frame(at: 0.5))
+    #expect(receive { messages.contains { $0.address == FaceLinkProtocol.Address.blendApply } })
+    let bones = boneNames()
+    #expect(bones.contains("LeftUpperArm"))
+    #expect(bones.contains("LeftIndexDistal"))
+    #expect(bones.filter { $0 == "Head" }.count == 1)
+
+    // 몸은 한 번만 얹는다
+    sender.send(SyntheticFace.frame(at: 0.6))
+    #expect(receive { messages.filter { $0.address == FaceLinkProtocol.Address.blendApply }.count == 2 })
+    #expect(boneNames().filter { $0 == "LeftUpperArm" }.count == 1)
+
+    // 960표본 = 10ms 패킷 2개
+    sender.sendAudio([Int16](repeating: 1000, count: 960))
+    #expect(receive { audioPackets.count == 2 })
+    #expect(audioPackets.allSatisfy { $0.count == FaceLinkAudioPacket.headerSize + 960 })
+    #expect(ports.count == 1)
+    #expect(wait { sender.currentStatus.audioPacketsSent == 2 })
+    #expect(sender.currentStatus.bodyFramesSent == 1)
+}
+
+/// 기능에 없는 몸·소리는 버린다 (Hello의 기능이 사실이게)
+@Test func senderDropsBodyAndAudioWithoutFeatures() throws {
+    let receiver = try LoopbackSocket()
+    let target = FaceLinkTarget(location: .address(host: "127.0.0.1", port: receiver.port), token: "")
+    let sender = FaceLinkSender(configuration: .init(target: target, deviceName: "Test", appVersion: "0.1.0"))
+    sender.start()
+    defer { sender.stop() }
+
+    var messages: [OSCMessage] = []
+    var audioPackets = 0
+    func receive(until condition: () -> Bool) -> Bool {
+        wait {
+            if let received = receiver.receive() {
+                if received.bytes.starts(with: FaceLinkAudioPacket.magic) {
+                    audioPackets += 1
+                } else {
+                    messages += (try? OSCDecoder.messages(in: received.bytes)) ?? []
+                }
+            }
+            return condition()
+        }
+    }
+    #expect(receive { messages.contains { $0.address == FaceLinkProtocol.Address.hello } })
+    #expect(messages.first { $0.address == FaceLinkProtocol.Address.hello }?.arguments.last == .string("face"))
+    sender.sendAudio([Int16](repeating: 1000, count: 960))
+    sender.sendBody(SyntheticFace.body(at: 0.5, hands: true))
+    sender.send(SyntheticFace.frame(at: 0.5))
+    #expect(receive { messages.contains { $0.address == FaceLinkProtocol.Address.blendApply } })
+    #expect(!messages.contains { $0.arguments.first == .string("LeftUpperArm") })
+    #expect(audioPackets == 0)
+}
+
 /// 시각을 직접 넣어 시험한다 (CI에서는 Thread.sleep이 한참 늦을 수 있다)
 @Test func frameRateLimiter() {
     func sentCount(frameRate: Int, times: [TimeInterval]) -> Int {

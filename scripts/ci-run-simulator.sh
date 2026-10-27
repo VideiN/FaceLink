@@ -3,8 +3,9 @@
 #   scripts/ci-run-simulator.sh <시뮬레이터 UDID> <.app 경로> <결과 폴더>
 # 1. 파이썬 수신기(scripts/facelink_receiver.py)를 띄운다. 시뮬레이터는 호스트와 네트워크를 같이 쓴다
 # 2. 받는 쪽 아이패드인 척 Bonjour(_facelink._udp)로 알린다 (dns-sd)
-# 3. 앱을 -autotest-send <QR 주소>로 띄워 시험 송신(합성 얼굴)을 보내게 하고, -autotest-browse로 Bonjour 찾기를 켠다
-# 4. 수신기가 형식, 토큰, Ack, Calibrate를 확인하고, 앱 로그에서 빌드 번호, Bonjour 찾기, Ack·보정 처리를 확인한다
+# 3. 앱을 -autotest-send <QR 주소>로 띄워 시험 송신(합성 얼굴, v1.1 몸·손가락·소리)을 보내게 하고, -autotest-browse로 Bonjour 찾기를 켠다
+# 4. 수신기가 형식, 토큰, Ack, Calibrate, v1.1 기능(몸 뼈, 소리 패킷)을 확인하고, 앱 로그에서 빌드 번호, Bonjour 찾기, Ack·보정 처리를 확인한다.
+#    받은 소리는 audio.wav로 남긴다 (아티팩트에서 들어 볼 수 있다)
 set -euo pipefail
 
 udid=$1
@@ -20,6 +21,7 @@ xcrun simctl install "$udid" "$app"
 
 python3 scripts/facelink_receiver.py --host 127.0.0.1 --port "$port" --name CI-Receiver \
   --duration 10 --timeout 120 --calibrate-after 3 --expect-calibrated-position --min-fps 20 --expect-token "$token" \
+  --expect-features face,body,hands,audio --save-audio "$out/audio.wav" \
   --quiet --summary "$out/receiver.json" > "$out/receiver.log" 2>&1 &
 receiver_pid=$!
 
@@ -63,6 +65,7 @@ check "build: #${GITHUB_RUN_NUMBER:-0} " "the app is this run's build"
 check "target: 127.0.0.1:$port (CI-Receiver) with token" "the app read the QR address"
 check "browse: found CI-iPad (service CI-iPad, v1)" "the app found the receiver by Bonjour"
 check "sender: ready" "the app's UDP connection became ready"
+check "features face,body,hands,audio" "the app sends body, fingers and audio in test mode"
 check "sender: ack from CI-Receiver" "the app received Ack"
 check "sender: calibrate requested by receiver" "the app received Calibrate"
 check "sender: calibrated" "the app calibrated"

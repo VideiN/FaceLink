@@ -87,7 +87,11 @@ private func decode(_ datagrams: [[UInt8]]) throws -> [OSCMessage] {
 @Test func helloArguments() {
     let hello = FaceLinkMessage.hello(deviceName: "내 iPhone", appVersion: "0.1.12", sessionID: "S", token: "")
     #expect(hello.address == "/FaceLink/Hello")
-    #expect(hello.arguments == [.string("1"), .string("내 iPhone"), .string("0.1.12"), .string("S"), .string("")])
+    #expect(hello.arguments == [.string("1"), .string("내 iPhone"), .string("0.1.12"), .string("S"), .string(""), .string("face")])
+    // v1.1 기능: 넣은 순서와 상관없이 face,body,hands,audio 순서
+    let all = FaceLinkMessage.hello(deviceName: "d", appVersion: "v", sessionID: "S", token: "t", features: [.audio, .hands, .face, .body])
+    #expect(all.arguments.last == .string("face,body,hands,audio"))
+    #expect(FaceLinkFeature.list([.audio, .face]) == "face,audio")
 }
 
 @Test func inboundMessages() {

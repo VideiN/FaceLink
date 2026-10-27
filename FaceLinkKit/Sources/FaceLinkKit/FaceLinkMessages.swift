@@ -3,10 +3,13 @@ import simd
 
 /// FaceLink v1 메시지 만들기 (docs/face-link.md 3.2, 3.3, 3.5)
 public enum FaceLinkMessage {
-    /// 보내는 동안 1초마다. 번들에 넣지 않고 따로 보낸다
-    public static func hello(deviceName: String, appVersion: String, sessionID: String, token: String) -> OSCMessage {
+    /// 보내는 동안 1초마다. 번들에 넣지 않고 따로 보낸다. 여섯째 인자는 v1.1의 기능 (v1 받는 쪽은 무시한다)
+    public static func hello(
+        deviceName: String, appVersion: String, sessionID: String, token: String, features: Set<FaceLinkFeature> = [.face]
+    ) -> OSCMessage {
         OSCMessage(FaceLinkProtocol.Address.hello, [
             .string(FaceLinkProtocol.version), .string(deviceName), .string(appVersion), .string(sessionID), .string(token),
+            .string(FaceLinkFeature.list(features)),
         ])
     }
 
@@ -20,6 +23,15 @@ public enum FaceLinkMessage {
         OSCMessage(FaceLinkProtocol.Address.bonePosition, [
             .string(name),
             .float(position.x), .float(position.y), .float(position.z),
+            .float(rotation.imag.x), .float(rotation.imag.y), .float(rotation.imag.z), .float(rotation.real),
+        ])
+    }
+
+    /// v1.1: 몸 전체 방향. 위치는 0 (받는 쪽은 회전만 쓴다)
+    public static func root(rotation: simd_quatf) -> OSCMessage {
+        OSCMessage(FaceLinkProtocol.Address.rootPosition, [
+            .string("root"),
+            .float(0), .float(0), .float(0),
             .float(rotation.imag.x), .float(rotation.imag.y), .float(rotation.imag.z), .float(rotation.real),
         ])
     }
@@ -52,9 +64,9 @@ public struct FaceLinkEncoder: Sendable {
         self.maxDatagramSize = maxDatagramSize
     }
 
-    /// Frame → Bone(머리, 눈) → Val ×52 → Apply. 얼굴을 놓친 프레임은 Bone·Val을 뺀다.
-    /// frame.head는 정면 보정까지 끝난 ARKit 좌표 값이고, 여기서 VMC(Unity) 좌표로 바꾼다
-    public func messages(for frame: FaceFrame, sequence: Int32, time: Float) -> [OSCMessage] {
+    /// Frame → Bone(머리, 눈) → 몸(v1.1, 있으면) → Val ×52 → Apply. 얼굴을 놓친 프레임은 머리·눈·Val을 뺀다 (몸은 보낸다).
+    /// frame.head는 정면 보정까지 끝난 ARKit 좌표 값이고, 여기서 VMC(Unity) 좌표로 바꾼다. 몸은 처음부터 Unity 좌표다
+    public func messages(for frame: FaceFrame, body: BodyPose? = nil, sequence: Int32, time: Float) -> [OSCMessage] {
         var messages = [FaceLinkMessage.frame(sequence: sequence, time: time, isTracked: frame.isTracked)]
         if frame.isTracked {
             let position = sendHeadPosition ? UnityCoordinates.position(frame.head.position) : .zero
@@ -63,6 +75,11 @@ public struct FaceLinkEncoder: Sendable {
                 messages.append(FaceLinkMessage.bone("LeftEye", position: .zero, rotation: UnityCoordinates.rotation(leftEye)))
                 messages.append(FaceLinkMessage.bone("RightEye", position: .zero, rotation: UnityCoordinates.rotation(rightEye)))
             }
+        }
+        if let body {
+            messages += Self.bodyMessages(body)
+        }
+        if frame.isTracked {
             for shape in BlendShape.allCases {
                 let value = frame.blendShapes[shape] ?? 0
                 messages.append(FaceLinkMessage.blendValue(shape, min(max(value, 0), 1)))
@@ -73,8 +90,23 @@ public struct FaceLinkEncoder: Sendable {
     }
 
     /// 번들 여러 개로 나눈 데이터그램. 하나가 maxDatagramSize 바이트를 넘지 않는다
-    public func datagrams(for frame: FaceFrame, sequence: Int32, time: Float) -> [[UInt8]] {
-        OSCBundle.pack(messages(for: frame, sequence: sequence, time: time), maxSize: maxDatagramSize)
+    public func datagrams(for frame: FaceFrame, body: BodyPose? = nil, sequence: Int32, time: Float) -> [[UInt8]] {
+        OSCBundle.pack(messages(for: frame, body: body, sequence: sequence, time: time), maxSize: maxDatagramSize)
+    }
+
+    /// 몸 (v1.1, 3.2): Root, 그리고 HumanBone 순서로 뼈마다 Bone/Pos (위치 0).
+    /// Head·눈은 얼굴이 보내므로 뺀다 (한 프레임에 같은 뼈가 두 번 가지 않게)
+    static func bodyMessages(_ body: BodyPose) -> [OSCMessage] {
+        var messages: [OSCMessage] = []
+        if let root = body.root {
+            messages.append(FaceLinkMessage.root(rotation: root.normalized))
+        }
+        for bone in HumanBone.allCases where !bone.isFace {
+            if let rotation = body.bones[bone] {
+                messages.append(FaceLinkMessage.bone(bone.name, position: .zero, rotation: rotation.normalized))
+            }
+        }
+        return messages
     }
 }
 
